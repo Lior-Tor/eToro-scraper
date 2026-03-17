@@ -14,13 +14,16 @@ Tracking eToro traders manually is tedious. This tool automates the entire proce
 
 ```text
 .
-├── index.js            # Main Node.js scraper (Puppeteer logic)
-├── .env                # Environment variables (Private)
+├── node_modules/       # Installed dependencies
+├── .env                # Private credentials (Webhook URL, Ticker)
 ├── .env.example        # Template for environment variables
-├── package.json        # Dependencies (Puppeteer, Dotenv)
-├── README.md           # Documentation
-└── AppScript.gs        # Backend code (To be pasted in Google Apps Script)
+├── .gitignore          # Tells Git to ignore .env and node_modules
+├── index.js            # Main Puppeteer scraping logic
+├── package-lock.json   # Exact versions of dependencies
+├── package.json        # Project metadata and dependencies
+└── README.md           # Documentation
 ```
+*Note: The `AppScript.gs` code is hosted on Google Servers and is not part of the local file tree.*
 
 ## 🛠️ Setup Instructions
 
@@ -145,16 +148,29 @@ node index.js
 This project features a custom Google Sheets function that connects directly to AI models. While the default setup uses **Google Gemini**, you can adapt the `AppScript.gs` to use OpenAI (GPT) or Anthropic (Claude) if you prefer.
 
 ### Prerequisites
-- **API Key:** You must obtain an API Key from [Google AI Studio](https://aistudio.google.com/) (for Gemini) and paste it into the `apiKey` variable in your Apps Script.
+- **API Key:** You must obtain an API Key from [Google AI Studio](https://aistudio.google.com/) and paste it into the `apiKey` variable in your Apps Script.
 
 ### How to use
-In your Google Sheet, create a new tab (e.g., "Summary") and use the following formula:
+In your Google Sheet, create a new tab and use the following formula:
 `=AI_PORTFOLIO_ANALYSIS("Your Prompt", Overview!A2:C100, 'Trades History'!A2:D500)`
 
 ### Example Prompt
-To get a professional analysis, copy and paste this prompt as the first argument:
+To get a professional analysis, use this prompt as the first argument:
 > *"Act as a professional quantitative financial analyst. I am providing you with two datasets from an eToro copy trader: a 'Portfolio Overview' (current allocations) and a 'Trades History' (past and current entries). First, summarize the asset allocation strategy. Second, deeply analyze the trader's behavior and psychology based on their trade history (e.g., position sizing, entry timing, averaging down/up, trading frequency). Finally, provide actionable recommendations to transition this portfolio into a simplified, cost-effective ETF-based strategy, suggesting the best globally diversified or sector-specific ETFs that match this risk profile. Explain your reasoning."*
+
+## ⚠️ Important Disclaimer on Selectors
+
+This project relies on specific **CSS Selectors** and **DOM structures** provided by eToro. 
+- **Dynamic Site:** Web platforms like eToro update their UI frequently.
+- **Breaking Changes:** If eToro modifies their HTML tags or class names, the scraper **will stop working**.
+- **Maintenance:** You may need to inspect the eToro portfolio page (F12) and update the selectors in `index.js` manually.
+
+## ⚖️ Legal Disclaimer
+
+This tool is for **educational and personal use only**. 
+- **Terms of Service:** Scraping may violate eToro's Terms of Service. Use it responsibly and at your own risk.
+- **Privacy:** Only public profiles should be targeted. This tool does not bypass any security measures or access private data.
+- **No Financial Advice:** The AI-generated insights are for informational purposes only and do not constitute financial advice.
 
 ## 🛡️ License
 ISC License.
-```
