@@ -143,20 +143,32 @@ Run the scraper:
 node index.js
 ```
 
-## 🧠 AI Financial Analysis
+## 🧠 AI Financial Analysis & Insights
 
-This project features a custom Google Sheets function that connects directly to AI models. While the default setup uses **Google Gemini**, you can adapt the `AppScript.gs` to use OpenAI (GPT) or Anthropic (Claude) if you prefer.
+You can analyze the gathered data using two different methods depending on your Google subscription and technical preference. I recommend creating a **3rd tab** named `Summary & Analysis` to perform these tasks.
 
-### Prerequisites
-- **API Key:** You must obtain an API Key from [Google AI Studio](https://aistudio.google.com/) and paste it into the `apiKey` variable in your Apps Script.
+### Option A: Custom Script (Free / Developer Choice)
+This method uses the built-in `AI_PORTFOLIO_ANALYSIS` function. It is ideal for creating an automated, self-updating dashboard.
 
-### How to use
-In your Google Sheet, create a new tab and use the following formula:
-`=AI_PORTFOLIO_ANALYSIS("Your Prompt", Overview!A2:C100, 'Trades History'!A2:D500)`
+* **Setup:** Ensure your Gemini API Key is pasted in `AppScript.gs`.
+* **Formula:** `=AI_PORTFOLIO_ANALYSIS(A1, Overview!A2:C100, 'Trades History'!A2:D500)` (where A1 contains your prompt).
+* **Pros:** Totally automated, uses the free API quota, and looks professional.
 
-### Example Prompt
-To get a professional analysis, use this prompt as the first argument:
+### Option B: Native "Ask Gemini" (Paid / User Friendly)
+If you have a paid **Google Gemini** subscription, you can use the native sidebar.
+
+* **How to:** Open the Gemini panel (top right ✨ icon) while staying on your `Summary & Analysis` tab.
+* **Usage:** You can copy-paste the **Example Prompt** below directly into the chat. Gemini will have context of your active sheets and provide a conversational analysis.
+* **Pros:** No API key required, supports natural follow-up questions, and offers a more interactive experience.
+
+---
+
+### 📝 Example Prompt (Works for both methods)
+Copy and paste this prompt to get a high-level quantitative analysis:
+
 > *"Act as a professional quantitative financial analyst. I am providing you with two datasets from an eToro copy trader: a 'Portfolio Overview' (current allocations) and a 'Trades History' (past and current entries). First, summarize the asset allocation strategy. Second, deeply analyze the trader's behavior and psychology based on their trade history (e.g., position sizing, entry timing, averaging down/up, trading frequency). Finally, provide actionable recommendations to transition this portfolio into a simplified, cost-effective ETF-based strategy, suggesting the best globally diversified or sector-specific ETFs that match this risk profile. Explain your reasoning."*
+
+---
 
 ## ⚠️ Important Disclaimer on Selectors
 
