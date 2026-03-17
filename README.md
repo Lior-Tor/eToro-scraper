@@ -147,18 +147,21 @@ node index.js
 
 You can analyze the gathered data using two different methods depending on your Google subscription and technical preference. I recommend creating a **3rd tab** named `Summary & Analysis` to perform these tasks.
 
+> **💡 Tip: Build a "Prompt Library"**
+> Use this 3rd tab to store a list of pre-defined prompts in different cells (e.g., "Risk Analysis," "Weekly Summary," "ETF Transition"). This allows you to quickly copy-paste them into the Gemini sidebar or reference them directly in your formulas without re-typing.
+
 ### Option A: Custom Script (Free / Developer Choice)
 This method uses the built-in `AI_PORTFOLIO_ANALYSIS` function. It is ideal for creating an automated, self-updating dashboard.
 
 * **Setup:** Ensure your Gemini API Key is pasted in `AppScript.gs`.
-* **Formula:** `=AI_PORTFOLIO_ANALYSIS(A1, Overview!A2:C100, 'Trades History'!A2:D500)` (where A1 contains your prompt).
-* **Pros:** Totally automated, uses the free API quota, and looks professional.
+* **Formula:** `=AI_PORTFOLIO_ANALYSIS(A1, Overview!A2:C100, 'Trades History'!A2:D500)` (where **A1** is a cell from your **Prompt Library**).
+* **Pros:** Totally automated, uses the free API quota, and provides a programmatic report directly in your sheet.
 
 ### Option B: Native "Ask Gemini" (Paid / User Friendly)
-If you have a paid **Google Gemini** subscription, you can use the native sidebar.
+If you have a paid **Google Gemini** subscription, you can use the native side panel.
 
 * **How to:** Open the Gemini panel (top right ✨ icon) while staying on your `Summary & Analysis` tab.
-* **Usage:** You can copy-paste the **Example Prompt** below directly into the chat. Gemini will have context of your active sheets and provide a conversational analysis.
+* **Usage:** Simply copy a prompt from your **Prompt Library** on the sheet and paste it into the chat. Gemini will analyze the active sheets and provide a conversational response.
 * **Pros:** No API key required, supports natural follow-up questions, and offers a more interactive experience.
 
 ---
