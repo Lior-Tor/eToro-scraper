@@ -1,6 +1,9 @@
 require('dotenv').config();
 const puppeteer = require('puppeteer');
 
+// Disable TLS certificate validation (use with caution)
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+
 // Helper function to pause execution (polite scraping)
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
