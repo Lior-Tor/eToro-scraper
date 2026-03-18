@@ -206,20 +206,26 @@ node index.js
 
 ## 🧠 AI Financial Analysis & Insights
 
-You can analyze the gathered data using two different methods depending on your Google subscription and technical preference. I recommend creating a **4th tab** named `Summary & Analysis` to perform these tasks.
+You can analyze the gathered data using three different methods depending on your subscriptions and technical preferences. I recommend creating a **4th tab** named `Summary & Analysis` to perform these tasks.
 
 > **💡 Tip: Build a "Prompt Library"**
-> Use this tab to store a list of pre-defined prompts in different cells (e.g., "Risk Analysis," "Weekly Summary," "ETF Transition"). This allows you to quickly copy-paste them into the Gemini sidebar or reference them directly in your formulas without re-typing.
+> Use this tab to store a list of pre-defined prompts in different cells (e.g., "Risk Analysis," "Weekly Summary," "ETF Transition"). This allows you to quickly copy-paste them into your AI of choice or reference them directly in your formulas.
 
 ### Option A: Custom Script (Free / Developer Choice)
 This method uses the built-in `AI_PORTFOLIO_ANALYSIS` function.
 * **Setup:** Ensure your [Google AI Studio API Key](https://aistudio.google.com/) is pasted in `AppScript.gs`.
 * **Formula:** `=AI_PORTFOLIO_ANALYSIS(A1, Overview!A2:C100, 'Trades History'!A2:D500, 'Closed History'!A2:G1000)` *(where **A1** is your prompt cell)*.
 
-### Option B: Native "Ask Gemini" (Paid / User Friendly)
+### Option B: Native "Ask Gemini" (Paid Google Users)
 If you have a paid **Google Gemini** subscription:
-* Open the Gemini panel (top right ✨ icon).
-* Simply copy a prompt from your **Prompt Library** on the sheet and paste it into the chat. Gemini will analyze the active sheets and provide a conversational response.
+* Open the Gemini side panel (top right ✨ icon) directly inside Google Sheets.
+* Simply copy a prompt from your **Prompt Library** on the sheet and paste it into the chat. Gemini will automatically read your active sheets and provide a conversational response.
+
+### Option C: External AI Connectors (ChatGPT, Claude, Gemini, etc.)
+If you prefer using other Large Language Models like ChatGPT, Claude, etc.:
+* **Native Drive Connectors:** Connect your Google Drive directly to your LLM (e.g., ChatGPT, Claude, Gemini, etc.). Once authorized, simply ask the AI to read your specific Google Sheet and paste your prompt.
+* **Manual Upload:** Go to `File > Download > Microsoft Excel (.xlsx)` or `.csv`, and upload the file directly into your LLM, along with your prompt.
+* **Workspace Add-ons:** Install popular extensions like [GPT for Sheets](https://workspace.google.com/marketplace/app/gpt_for_sheets_and_docs/677318054654), Claude for Sheets, or Gemini add-ons. This allows you to use functions like `=GPT(prompt, range)` natively, mimicking the behavior of Option A but with your preferred AI provider.
 
 ---
 
