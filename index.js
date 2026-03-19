@@ -1,7 +1,7 @@
 require('dotenv').config();
 const puppeteer = require('puppeteer');
 
-// Disable TLS certificate validation (Fixes the Phase 3 fetch error behind certain firewalls/VPNs)
+// Disable TLS certificate validation (Fixes the Phase 5 fetch error behind certain firewalls/VPNs)
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
 // Helper function to pause execution (polite scraping)
@@ -18,8 +18,9 @@ async function scrapeEtoro() {
     const masterPayload = {
         type: "full_portfolio",
         overview: [],
-        trades: [],
-        history: []
+        stats: [],    // Past Performance Stats (Monthly/YTD)
+        trades: [],   // Active Trades
+        history: []   // Closed Trades
     };
 
     try {
@@ -38,7 +39,7 @@ async function scrapeEtoro() {
             console.error("   -> Please check if the TRADER_USERNAME in your .env is correct.");
             console.error("   -> Ensure the user's profile is public.\n");
             await browser.close();
-            return; // Stop script execution gracefully
+            return; // Gracefully stop script execution
         }
 
         console.log("🔍 Extracting tickers...");
@@ -61,13 +62,79 @@ async function scrapeEtoro() {
             });
             return results;
         });
-        
         console.log(`✅ Found ${masterPayload.overview.length} assets!`);
 
         // ==========================================
-        // PHASE 2: LOOP THROUGH TICKERS FOR OPEN TRADES
+        // PHASE 2: SCRAPE PAST PERFORMANCE STATS
         // ==========================================
-        console.log(`\n🔄 [PHASE 2] Starting deep extraction for active trades...`);
+        console.log(`\n📊 [PHASE 2] Extracting Past Performance (Stats)...`);
+        const statsUrl = `https://www.etoro.com/people/${trader}/stats`;
+        await page.goto(statsUrl, { waitUntil: 'networkidle2' });
+        
+        await page.waitForSelector('et-user-performance-chart-new', { timeout: 15000 });
+
+        // Force click via DOM for "Show More" to load older years, bypassing UI overlays
+        try {
+            const hasClicked = await page.evaluate(() => {
+                const btn = document.querySelector('.performance-chart-extend, .performance-chart-extend span');
+                if (btn && btn.offsetParent !== null) { 
+                    btn.click();
+                    return true;
+                }
+                return false;
+            });
+            if (hasClicked) {
+                console.log("🖱️ Found 'Show More' for older years. Clicking it...");
+                await delay(2000); // Allow time for older years to render
+            }
+        } catch (e) {
+            // Ignore if no button is found
+        }
+
+        console.log("🔍 Extracting performance grid...");
+        masterPayload.stats = await page.evaluate(() => {
+            const rows = document.querySelectorAll('.performance-chart-info');
+            const data = [];
+            
+            rows.forEach(row => {
+                // eToro renders this table Right-To-Left in the DOM structure
+                // Real DOM order: [YTD, Dec, Nov, ... , Feb, Jan, Year]
+                const cols = Array.from(row.children).map(c => c.innerText.trim());
+                
+                // Dynamically find the index containing the year (e.g., "2026")
+                const yearIndex = cols.findIndex(c => /^20\d{2}$/.test(c));
+                
+                // If a year is found and we have all 14 columns
+                if (yearIndex !== -1 && cols.length >= 14) {
+                    data.push({
+                        year: cols[yearIndex],
+                        jan: cols[yearIndex - 1] || "", 
+                        feb: cols[yearIndex - 2] || "", 
+                        mar: cols[yearIndex - 3] || "",
+                        apr: cols[yearIndex - 4] || "", 
+                        may: cols[yearIndex - 5] || "", 
+                        jun: cols[yearIndex - 6] || "",
+                        jul: cols[yearIndex - 7] || "", 
+                        aug: cols[yearIndex - 8] || "", 
+                        sep: cols[yearIndex - 9] || "",
+                        oct: cols[yearIndex - 10] || "", 
+                        nov: cols[yearIndex - 11] || "", 
+                        dec: cols[yearIndex - 12] || "",
+                        ytd: cols[yearIndex - 13] || ""
+                    });
+                }
+            });
+            
+            // Ensure array is sorted chronologically (descending)
+            return data.sort((a, b) => parseInt(b.year) - parseInt(a.year));
+        });
+        
+        console.log(`✅ Extracted ${masterPayload.stats.length} years of performance history.`);
+
+        // ==========================================
+        // PHASE 3: LOOP THROUGH TICKERS FOR OPEN TRADES
+        // ==========================================
+        console.log(`\n🔄 [PHASE 3] Starting deep extraction for active trades...`);
         
         for (const asset of masterPayload.overview) {
             const tickerUrl = `https://www.etoro.com/people/${trader}/portfolio/${asset.ticker.toLowerCase()}`;
@@ -110,12 +177,10 @@ async function scrapeEtoro() {
         }
 
         // ==========================================
-        // PHASE 3: SCRAPE CLOSED TRADES HISTORY
+        // PHASE 4: SCRAPE CLOSED TRADES HISTORY
         // ==========================================
-        // Calculate required clicks (approx 30 trades per click, minus the initial 30)
         const maxClicks = Math.ceil(Math.max(0, targetHistoryTrades - 30) / 30);
-        
-        console.log(`\n🕰️ [PHASE 3] Extracting closed history (Targeting ~${targetHistoryTrades} trades)...`);
+        console.log(`\n🕰️ [PHASE 4] Extracting closed history (Targeting ~${targetHistoryTrades} trades)...`);
         const historyUrl = `https://www.etoro.com/people/${trader}/portfolio/history`;
         await page.goto(historyUrl, { waitUntil: 'networkidle2' });
         
@@ -126,16 +191,11 @@ async function scrapeEtoro() {
         
         while (clickCount < maxClicks) {
             try {
-                // 1. Force scroll to the bottom to ensure the area is loaded
                 await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-                await delay(1000); // Pause to allow scrolling
+                await delay(1000); 
 
-                // 2. Force click via DOM (bypasses overlays like cookie banners)
                 const hasClicked = await page.evaluate(() => {
-                    // Target the exact child to avoid clicking the wrong button
                     const btn = document.querySelector('et-people-portfolio-history-flat > button');
-                    
-                    // Check if button exists AND is visible
                     if (btn && btn.offsetParent !== null) { 
                         btn.click();
                         return true;
@@ -143,12 +203,9 @@ async function scrapeEtoro() {
                     return false;
                 });
                 
-                if (!hasClicked) {
-                    // If false is returned, there's no button left (end of history reached)
-                    break;
-                }
+                if (!hasClicked) break;
                 
-                await delay(2500); // Allow eToro servers time to load new rows
+                await delay(2500); 
                 clickCount++;
                 process.stdout.write(`.`); 
             } catch (e) {
@@ -164,22 +221,16 @@ async function scrapeEtoro() {
             const results = [];
 
             slots.forEach(slot => {
-                // Navigate to the parent element to grab the Action (e.g., "BUY SLV")
                 const row = slot.closest('.et-table-body > *, et-people-portfolio-history-item') || slot.parentElement;
-                
                 let action = row.querySelector('.et-table-first-cell')?.innerText.trim();
-                if (!action) {
-                    action = row.innerText.split('\n')[0].trim(); 
-                }
+                if (!action) action = row.innerText.split('\n')[0].trim(); 
 
                 const open = slot.children[1]?.innerText.trim() || "";
-                
                 const openTimeContainer = slot.children[2];
                 const openDate = openTimeContainer?.querySelector('p:nth-child(1)')?.innerText.trim() || openTimeContainer?.innerText.trim().split('\n')[0] || "";
                 const openTime = openTimeContainer?.querySelector('p:nth-child(2)')?.innerText.trim() || openTimeContainer?.innerText.trim().split('\n')[1] || "";
                 
                 const close = slot.children[3]?.innerText.trim() || "";
-                
                 const closeTimeContainer = slot.children[4];
                 const closeDate = closeTimeContainer?.querySelector('p:nth-child(1)')?.innerText.trim() || closeTimeContainer?.innerText.trim().split('\n')[0] || "";
                 const closeTime = closeTimeContainer?.querySelector('p:nth-child(2)')?.innerText.trim() || closeTimeContainer?.innerText.trim().split('\n')[1] || "";
@@ -188,24 +239,19 @@ async function scrapeEtoro() {
 
                 if (open || close || pl) {
                     results.push({
-                        action: action,
-                        open: open,
-                        openDate: `${openDate} ${openTime}`.trim(),
-                        close: close,
-                        closeDate: `${closeDate} ${closeTime}`.trim(),
-                        pl: pl
+                        action: action, open: open, openDate: `${openDate} ${openTime}`.trim(),
+                        close: close, closeDate: `${closeDate} ${closeTime}`.trim(), pl: pl
                     });
                 }
             });
             return results;
         });
-        
         console.log(`✅ Extracted ${masterPayload.history.length} historical trades.`);
 
         // ==========================================
-        // PHASE 4: SEND DATA TO GOOGLE SHEETS
+        // PHASE 5: SEND DATA TO GOOGLE SHEETS
         // ==========================================
-        console.log(`\n📤 [PHASE 4] Sending payload to Google Sheets...`);
+        console.log(`\n📤 [PHASE 5] Sending payload to Google Sheets...`);
         
         const response = await fetch(process.env.WEBHOOK_URL, {
             method: 'POST',
