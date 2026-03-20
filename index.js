@@ -240,35 +240,25 @@ async function scrapeTrader(browser, trader, targetHistoryTrades, isFirstBatch) 
             const slots = Array.from(document.querySelectorAll('#publicHistoryFlatView .et-table-body-slot'));
             const results = [];
             slots.forEach(slot => {
-                const row = slot.closest('.et-table-body > *, et-people-portfolio-history-item') || slot.parentElement;
-                
-                // 1. ACTION (ex: "Buy AAPL")
-                let action = row.querySelector('.et-table-first-cell')?.innerText.trim() || row.innerText.split('\n')[0].trim(); 
-                
-                // 2. OPEN (Price & Dates)
-                const open = slot.children[1]?.innerText.trim() || "";
-                const openTimeContainer = slot.children[2];
-                const openDate = openTimeContainer?.querySelector('p:nth-child(1)')?.innerText.trim() || openTimeContainer?.innerText.trim().split('\n')[0] || "";
-                const openTime = openTimeContainer?.querySelector('p:nth-child(2)')?.innerText.trim() || openTimeContainer?.innerText.trim().split('\n')[1] || "";
-                
-                // 3. CLOSE (Price & Dates)
-                const close = slot.children[3]?.innerText.trim() || "";
-                const closeTimeContainer = slot.children[4];
-                const closeDate = closeTimeContainer?.querySelector('p:nth-child(1)')?.innerText.trim() || closeTimeContainer?.innerText.trim().split('\n')[0] || "";
-                const closeTime = closeTimeContainer?.querySelector('p:nth-child(2)')?.innerText.trim() || closeTimeContainer?.innerText.trim().split('\n')[1] || "";
-                
-                const plNode = row.querySelector('[automation-id="cd-public-history-flat-table-item-gain"]');
-                let pl = "";
-                
-                if (plNode) {
-                    pl = plNode.textContent.replace(/\s+/g, '');
-                } else {
-                    // Fallback
-                    const fallbackNode = row.querySelector('.positive, .negative');
-                    if (fallbackNode && fallbackNode.textContent.includes('%')) {
-                        pl = fallbackNode.textContent.replace(/\s+/g, '');
-                    }
-                }
+                // 1. ACTION — now inside the slot under automation-id
+                const actionEl = slot.querySelector('[automation-id="cd-public-history-flat-table-item-first-name"]');
+                const action = actionEl?.innerText.trim() || "";
+
+                // 2. OPEN (Price & Date)
+                const open = slot.querySelector('[automation-id="cd-public-history-flat-table-item-open-rate"]')?.innerText.trim() || "";
+                const openDateEl = slot.querySelector('[automation-id="cd-public-history-flat-table-item-open-date"]');
+                const openDate = openDateEl?.querySelector('p:nth-child(1)')?.innerText.trim() || "";
+                const openTime = openDateEl?.querySelector('p:nth-child(2)')?.innerText.trim() || "";
+
+                // 3. CLOSE (Price & Date)
+                const close = slot.querySelector('[automation-id="cd-public-history-flat-table-item-close-rate"]')?.innerText.trim() || "";
+                const closeDateEl = slot.querySelector('[automation-id="cd-public-history-flat-table-item-close-date"]');
+                const closeDate = closeDateEl?.querySelector('p:nth-child(1)')?.innerText.trim() || "";
+                const closeTime = closeDateEl?.querySelector('p:nth-child(2)')?.innerText.trim() || "";
+
+                // 4. P/L
+                const plNode = slot.querySelector('[automation-id="cd-public-history-flat-table-item-gain"]');
+                const pl = plNode ? plNode.textContent.replace(/\s+/g, '') : "";
 
                 if (open || close || pl) {
                     results.push({ action, open, openDate: `${openDate} ${openTime}`.trim(), close, closeDate: `${closeDate} ${closeTime}`.trim(), pl });
@@ -386,7 +376,7 @@ async function start() {
     const targetHistoryTrades = parseInt(process.env.HISTORY_TRADES_TARGET, 10) || 500;
     
     // Note: If you encounter IP blocks (scraping has errors), use the next browser variable. Remember to switch back for faster scraping once done.
-    const browser = await puppeteer.launch({ headless: true });
+    const browser = await puppeteer.launch({ headless: true, defaultViewport: { width: 1920, height: 1080 } });
 
     // In case of blocked IP or aggressive anti-scraping, use to open browser window and pass CAPTCHA or other verification.
     // const browser = await puppeteer.launch({ headless: false, defaultViewport: null });
