@@ -73,7 +73,7 @@ function doPost(e) {
   let sheet = ss.getSheetByName(traderName);
   if (!sheet) {
     // Insert new trader sheet AFTER "Summary & Analysis"
-    sheet = ss.insertSheet(traderName, 1);
+    sheet = ss.insertSheet(traderName, ss.getSheets().length);
   } else {
     sheet.clear(); 
   }

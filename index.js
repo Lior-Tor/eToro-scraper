@@ -75,7 +75,8 @@ async function generateLocalFiles(allData, exportFlags) {
 
             addStyledTable(1, "OVERVIEW", ['Ticker', 'Invested (%)', 'P/L (%)'], data.overview);
             addStyledTable(5, "PAST PERFORMANCE", ['Year','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec','YTD'], data.stats);
-            addStyledTable(20, "ACTIVE TRADES", ['Action', 'Date', 'Amount', 'Open Price'], data.trades);
+            const formattedTrades = data.trades.map(t => ({ action: t.action, date: t.date, amount: t.amount, openPrice: t.openPrice }));
+            addStyledTable(20, "ACTIVE TRADES", ['Action', 'Date', 'Amount', 'Open Price'], formattedTrades);
             addStyledTable(25, "CLOSED HISTORY", ['Action', 'Open Price', 'Open Date', 'Close Price', 'Close Date', 'P/L (%)'], data.history);
             
             ws.columns.forEach(col => col.width = 15);
@@ -240,19 +241,34 @@ async function scrapeTrader(browser, trader, targetHistoryTrades, isFirstBatch) 
             const results = [];
             slots.forEach(slot => {
                 const row = slot.closest('.et-table-body > *, et-people-portfolio-history-item') || slot.parentElement;
+                
+                // 1. ACTION (ex: "Buy AAPL")
                 let action = row.querySelector('.et-table-first-cell')?.innerText.trim() || row.innerText.split('\n')[0].trim(); 
                 
+                // 2. OPEN (Price & Dates)
                 const open = slot.children[1]?.innerText.trim() || "";
                 const openTimeContainer = slot.children[2];
                 const openDate = openTimeContainer?.querySelector('p:nth-child(1)')?.innerText.trim() || openTimeContainer?.innerText.trim().split('\n')[0] || "";
                 const openTime = openTimeContainer?.querySelector('p:nth-child(2)')?.innerText.trim() || openTimeContainer?.innerText.trim().split('\n')[1] || "";
                 
+                // 3. CLOSE (Price & Dates)
                 const close = slot.children[3]?.innerText.trim() || "";
                 const closeTimeContainer = slot.children[4];
                 const closeDate = closeTimeContainer?.querySelector('p:nth-child(1)')?.innerText.trim() || closeTimeContainer?.innerText.trim().split('\n')[0] || "";
                 const closeTime = closeTimeContainer?.querySelector('p:nth-child(2)')?.innerText.trim() || closeTimeContainer?.innerText.trim().split('\n')[1] || "";
                 
-                const pl = slot.children[5]?.innerText.trim() || "";
+                const plNode = row.querySelector('[automation-id="cd-public-history-flat-table-item-gain"]');
+                let pl = "";
+                
+                if (plNode) {
+                    pl = plNode.textContent.replace(/\s+/g, '');
+                } else {
+                    // Fallback
+                    const fallbackNode = row.querySelector('.positive, .negative');
+                    if (fallbackNode && fallbackNode.textContent.includes('%')) {
+                        pl = fallbackNode.textContent.replace(/\s+/g, '');
+                    }
+                }
 
                 if (open || close || pl) {
                     results.push({ action, open, openDate: `${openDate} ${openTime}`.trim(), close, closeDate: `${closeDate} ${closeTime}`.trim(), pl });
