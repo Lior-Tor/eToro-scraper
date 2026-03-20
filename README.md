@@ -1,24 +1,25 @@
 # eToro Portfolio & Trades Scraper 📈🤖
 
-Stop tracking eToro traders manually. This automated pipeline extracts public portfolios, past performance stats, active trades, and closed histories into a professional Google Sheets dashboard, complete with built-in **AI** behavioral and financial analysis.
+This automated Node.js pipeline acts as a professional multi-trader screener. It extracts public portfolios, long-term past performance stats, active trades, and closed histories, routing the data into highly structured Google Sheets or local Excel/CSV files for **Advanced AI Analysis**.
 
 ## 🚀 Overview
 
-Tracking copy-traders efficiently requires looking beyond just their current holdings. This tool automates the entire process:
-1. **Extraction:** A Node.js script uses Puppeteer to scrape the global portfolio, historical performance (monthly/yearly), active trades, and dynamically loads the closed trades history for a specific user.
-2. **Transmission:** Data is sent via a secure POST request to a Google Apps Script Webhook.
-3. **Storage & UI:** Google Sheets receives the data, auto-formats it with professional styling (Midnight Blue themes, filters, correct date parsing), and splits it into four clear tabs (`Overview`, `Past Performance`, `Trades History`, `Closed History`).
-4. **AI Insights:** A custom Sheets function (`AI_PORTFOLIO_ANALYSIS`) or external LLM connector uses the data to analyze the trader's behavior, win rate, and risk management to suggest ETF transition strategies.
+Tracking copy-traders efficiently requires looking beyond just their current holdings. This tool extracts the hard data needed to bypass the "social noise" on eToro and perform real financial analysis:
+1. **Multi-Trader Extraction:** A Node.js script uses Puppeteer to sequentially scrape the global portfolio, historical performance (monthly/yearly), active trades, and closed trades history for one or multiple target users.
+2. **7-Option Interactive CLI:** Choose your destination before scraping. Export directly to Google Sheets (via Webhook), local `.xlsx` files, `.csv` files, or any combination of the three.
+3. **Storage & UI:** - **Google Sheets:** Receives the data via a secure POST request, auto-formats it with professional styling (Midnight Blue themes), and creates a dedicated tab for each trader (e.g., `@username`) with the four datasets placed side-by-side.
+   - **Local Files:** Generates beautiful consolidated Excel files or AI-friendly CSV files directly on your machine.
+4. **Three-Dimensional AI Insights:** Because the scraper extracts pure, unbiased data, you can feed it to Large Language Models (LLMs) to perform **Quantitative** (stats & risk), **Qualitative** (themes & moats), or **Hybrid** analysis.
 
 ## 📂 Project Structure
 
 ```text
 .
 ├── node_modules/       # Installed dependencies
-├── .env                # Private credentials (Webhook URL, Target Trader)
+├── .env                # Private credentials (Webhook URL, Trader Usernames)
 ├── .env.example        # Template for environment variables
-├── .gitignore          # Tells Git to ignore .env and node_modules
-├── index.js            # Main Puppeteer scraping logic
+├── .gitignore          # Tells Git to ignore .env, node_modules, and local data files
+├── index.js            # Main Puppeteer scraping and export logic
 ├── package-lock.json   # Exact versions of dependencies
 ├── package.json        # Project metadata and dependencies
 └── README.md           # Documentation
@@ -28,6 +29,7 @@ Tracking copy-traders efficiently requires looking beyond just their current hol
 ## 🛠️ Setup Instructions
 
 ### 1. Google Sheets Configuration (The Backend)
+If you want to use the automated Google Sheets dashboard:
 1. Create a new Google Sheet.
 2. Go to **Extensions > Apps Script**.
 3. Paste the following code into the editor:
@@ -35,156 +37,159 @@ Tracking copy-traders efficiently requires looking beyond just their current hol
 ```javascript
 /**
  * Main Webhook to receive data from the Node.js scraper.
+ * Handles single/multiple traders and manages tab routing dynamically.
  */
 function doPost(e) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const payload = JSON.parse(e.postData.contents);
 
-  if (payload.type === "full_portfolio") {
-    
-    const parseDate = (dStr) => {
-       if(!dStr) return "";
-       try {
-           const p = dStr.split(/[\s/:]/);
-           if(p.length >= 5) return new Date(p[2], p[1]-1, p[0], p[3], p[4]);
-       } catch(err) {}
-       return dStr;
-    };
+  // Ping test handler
+  if (payload.type !== "full_portfolio") {
+    return ContentService.createTextOutput("Ping OK").setMimeType(ContentService.MimeType.TEXT);
+  }
 
-    // --- 1. OVERVIEW SHEET ---
-    let overviewSheet = ss.getSheetByName("Overview") || ss.insertSheet("Overview");
-    overviewSheet.clear(); 
-    const overviewRows = [['Ticker', 'Invested (%)', 'P/L (%)']];
-    payload.overview.forEach(item => overviewRows.push([item.ticker, item.invested, item.pl]));
-    overviewSheet.getRange(1, 1, overviewRows.length, 3).setValues(overviewRows);
-    overviewSheet.getRange(1, 1, 1, 3).setFontWeight('bold').setBackground('#2c3e50').setFontColor('white');
-    overviewSheet.setFrozenRows(1);
-    overviewSheet.getRange(2, 2, overviewRows.length - 1, 2).setHorizontalAlignment('center').setVerticalAlignment('middle');
-    overviewSheet.getDataRange().setBorder(true, true, true, true, true, true, '#e0e0e0', SpreadsheetApp.BorderStyle.SOLID);
-    overviewSheet.setRowHeights(1, overviewRows.length, 32);
-    if (overviewSheet.getFilter()) overviewSheet.getFilter().remove();
-    overviewSheet.getDataRange().createFilter();
+  // --- 1. Enforce "Summary & Analysis" exists and is Tab 1 ---
+  let summarySheet = ss.getSheetByName("Summary & Analysis");
+  if (!summarySheet) {
+    summarySheet = ss.insertSheet("Summary & Analysis", 0);
+  } else {
+    ss.setActiveSheet(summarySheet);
+    ss.moveActiveSheet(1); 
+  }
 
-    // --- 2. PAST PERFORMANCE (STATS) SHEET ---
-    if (payload.stats && payload.stats.length > 0) {
-      let statsSheet = ss.getSheetByName("Past Performance") || ss.insertSheet("Past Performance");
-      statsSheet.clear();
-      
-      const statsRows = [['Year', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec', 'YTD']];
-      payload.stats.forEach(s => {
-        statsRows.push([s.year, s.jan, s.feb, s.mar, s.apr, s.may, s.jun, s.jul, s.aug, s.sep, s.oct, s.nov, s.dec, s.ytd]);
-      });
+  // --- 2. Clean up old trader tabs IF this is the first batch ---
+  if (payload.isFirstBatch === true) {
+    const allSheets = ss.getSheets();
+    allSheets.forEach(sheet => {
+      // Delete any sheet that starts with "@" (Trader tabs)
+      if (sheet.getName().startsWith('@')) {
+        ss.deleteSheet(sheet);
+      }
+    });
+  }
 
-      statsSheet.getRange(1, 1, statsRows.length, 14).setValues(statsRows);
-      statsSheet.getRange(1, 1, 1, 14).setFontWeight('bold').setBackground('#2c3e50').setFontColor('white');
-      statsSheet.setFrozenRows(1);
-      statsSheet.getRange(2, 1, statsRows.length - 1, 14).setHorizontalAlignment('center').setVerticalAlignment('middle');
-      statsSheet.getDataRange().setBorder(true, true, true, true, true, true, '#e0e0e0', SpreadsheetApp.BorderStyle.SOLID);
-      statsSheet.setRowHeights(1, statsRows.length, 30);
-    }
+  // --- 3. Create or get the specific sheet for this trader ---
+  const traderName = payload.traderUsername ? `@${payload.traderUsername}` : "@unknown_trader";
+  let sheet = ss.getSheetByName(traderName);
+  if (!sheet) {
+    // Insert new trader sheet AFTER "Summary & Analysis"
+    sheet = ss.insertSheet(traderName, 1);
+  } else {
+    sheet.clear(); 
+  }
 
-    // --- 3. ACTIVE TRADES SHEET ---
-    let tradesSheet = ss.getSheetByName("Trades History") || ss.insertSheet("Trades History");
-    tradesSheet.clear();
+  // Helper to safely parse eToro dates
+  const parseDate = (dStr) => {
+     if(!dStr) return "";
+     try {
+         const p = dStr.split(/[\s/:]/);
+         if(p.length >= 5) return new Date(p[2], p[1]-1, p[0], p[3], p[4]);
+     } catch(err) {}
+     return dStr;
+  };
+
+  // Helper to cleanly merge cells and apply Midnight Blue styling
+  const createSectionTitle = (colStart, colCount, title) => {
+      let titleRange = sheet.getRange(1, colStart, 1, colCount);
+      titleRange.clearContent();
+      sheet.getRange(1, colStart).setValue(title); 
+      titleRange.mergeAcross()
+                .setFontWeight('bold').setFontSize(11)
+                .setBackground('#ecf0f1').setFontColor('#2c3e50')
+                .setHorizontalAlignment('center').setVerticalAlignment('middle');
+  };
+
+  // ==========================================
+  // SECTION: OVERVIEW (Columns A, B, C)
+  // ==========================================
+  createSectionTitle(1, 3, "OVERVIEW");
+  const overviewRows = [['Ticker', 'Invested (%)', 'P/L (%)']];
+  if (payload.overview) payload.overview.forEach(item => overviewRows.push([item.ticker, item.invested, item.pl]));
+  
+  let overRange = sheet.getRange(2, 1, overviewRows.length, 3);
+  overRange.setValues(overviewRows);
+  sheet.getRange(2, 1, 1, 3).setFontWeight('bold').setBackground('#2c3e50').setFontColor('white');
+  if (overviewRows.length > 1) sheet.getRange(3, 2, overviewRows.length - 1, 2).setHorizontalAlignment('center').setVerticalAlignment('middle');
+  overRange.setBorder(true, true, true, true, true, true, '#e0e0e0', SpreadsheetApp.BorderStyle.SOLID);
+
+  // ==========================================
+  // SECTION: PAST PERFORMANCE (Columns E to R)
+  // ==========================================
+  createSectionTitle(5, 14, "PAST PERFORMANCE");
+  const statsRows = [['Year', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec', 'YTD']];
+  if (payload.stats) {
+    payload.stats.forEach(s => statsRows.push([s.year, s.jan, s.feb, s.mar, s.apr, s.may, s.jun, s.jul, s.aug, s.sep, s.oct, s.nov, s.dec, s.ytd]));
+  }
+  
+  let statsRange = sheet.getRange(2, 5, statsRows.length, 14);
+  statsRange.setValues(statsRows);
+  sheet.getRange(2, 5, 1, 14).setFontWeight('bold').setBackground('#2c3e50').setFontColor('white');
+  if (statsRows.length > 1) sheet.getRange(3, 5, statsRows.length - 1, 14).setHorizontalAlignment('center').setVerticalAlignment('middle');
+  statsRange.setBorder(true, true, true, true, true, true, '#e0e0e0', SpreadsheetApp.BorderStyle.SOLID);
+
+  // ==========================================
+  // SECTION: ACTIVE TRADES (Columns T to W)
+  // ==========================================
+  createSectionTitle(20, 4, "ACTIVE TRADES");
+  const tradesRows = [['Action', 'Date', 'Amount', 'Open Price']];
+  if (payload.trades) {
     payload.trades.sort((a, b) => {
        if (a.ticker !== b.ticker) return a.ticker.localeCompare(b.ticker);
        const tA = new Date(parseDate(a.date)).getTime() || 0;
        const tB = new Date(parseDate(b.date)).getTime() || 0;
        return tB - tA;
     });
-    const tradesRows = [['Action', 'Date', 'Amount', 'Open Price']];
     payload.trades.forEach(trade => tradesRows.push([trade.action, parseDate(trade.date), trade.amount, trade.openPrice]));
-    
-    if (tradesRows.length > 1) {
-      tradesSheet.getRange(1, 1, tradesRows.length, 4).setValues(tradesRows);
-      tradesSheet.getRange(1, 1, 1, 4).setFontWeight('bold').setBackground('#2c3e50').setFontColor('white');
-      tradesSheet.setFrozenRows(1);
-      tradesSheet.getRange(2, 2, tradesRows.length - 1, 1).setNumberFormat('dd/MM/yyyy HH:mm');
-      tradesSheet.getRange(2, 2, tradesRows.length - 1, 2).setHorizontalAlignment('center').setVerticalAlignment('middle');
-      tradesSheet.getDataRange().setBorder(true, true, true, true, true, true, '#e0e0e0', SpreadsheetApp.BorderStyle.SOLID);
-      tradesSheet.setRowHeights(1, tradesRows.length, 30);
-      if (tradesSheet.getFilter()) tradesSheet.getFilter().remove();
-      tradesSheet.getDataRange().createFilter();
-    }
-
-    // --- 4. CLOSED HISTORY SHEET ---
-    if (payload.history && payload.history.length > 0) {
-      let historySheet = ss.getSheetByName("Closed History") || ss.insertSheet("Closed History");
-      historySheet.clear();
-      const historyRows = [['Action', 'Open Price', 'Open Date', 'Close Price', 'Close Date', 'P/L (%)']];
-      payload.history.forEach(trade => {
-        historyRows.push([trade.action, trade.open, parseDate(trade.openDate), trade.close, parseDate(trade.closeDate), trade.pl]);
-      });
-
-      historySheet.getRange(1, 1, historyRows.length, 6).setValues(historyRows);
-      historySheet.getRange(1, 1, 1, 6).setFontWeight('bold').setBackground('#2c3e50').setFontColor('white');
-      historySheet.setFrozenRows(1);
-      historySheet.getRange(2, 3, historyRows.length - 1, 1).setNumberFormat('dd/MM/yyyy HH:mm').setHorizontalAlignment('center');
-      historySheet.getRange(2, 5, historyRows.length - 1, 1).setNumberFormat('dd/MM/yyyy HH:mm').setHorizontalAlignment('center');
-      historySheet.getRange(2, 6, historyRows.length - 1, 1).setHorizontalAlignment('center');
-      historySheet.getDataRange().setBorder(true, true, true, true, true, true, '#e0e0e0', SpreadsheetApp.BorderStyle.SOLID);
-      historySheet.setRowHeights(1, historyRows.length, 30);
-      if (historySheet.getFilter()) historySheet.getFilter().remove();
-      historySheet.getDataRange().createFilter();
-    }
-
-    // --- 5. ENFORCE TAB ORDER ---
-    const tabOrder = ["Overview", "Past Performance", "Trades History", "Closed History"];
-    tabOrder.forEach((sheetName, index) => {
-      const sheet = ss.getSheetByName(sheetName);
-      if (sheet) {
-        ss.setActiveSheet(sheet);
-        ss.moveActiveSheet(index + 1);
-      }
-    });
-
-    return ContentService.createTextOutput("Success: All sheets updated successfully.").setMimeType(ContentService.MimeType.TEXT);
   }
   
-  return ContentService.createTextOutput("Error: Invalid Payload.").setMimeType(ContentService.MimeType.TEXT);
-}
+  let tradesRange = sheet.getRange(2, 20, tradesRows.length, 4);
+  tradesRange.setValues(tradesRows);
+  sheet.getRange(2, 20, 1, 4).setFontWeight('bold').setBackground('#2c3e50').setFontColor('white');
+  if (tradesRows.length > 1) {
+    sheet.getRange(3, 21, tradesRows.length - 1, 1).setNumberFormat('dd/MM/yyyy HH:mm').setHorizontalAlignment('center');
+    sheet.getRange(3, 22, tradesRows.length - 1, 2).setHorizontalAlignment('center').setVerticalAlignment('middle');
+  }
+  tradesRange.setBorder(true, true, true, true, true, true, '#e0e0e0', SpreadsheetApp.BorderStyle.SOLID);
 
-/**
- * AI Function to analyze portfolio data.
- * Updated to accept 4 ranges (Overview, Stats, Active Trades, Closed History)
- */
-function AI_PORTFOLIO_ANALYSIS(promptText, overviewRange, statsRange, tradesRange, historyRange) {
-  const cache = CacheService.getScriptCache();
-  const cacheKey = Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, promptText + JSON.stringify(overviewRange)));
-  const cachedResponse = cache.get(cacheKey);
-  if (cachedResponse != null) return cachedResponse;
+  // ==========================================
+  // SECTION: CLOSED HISTORY (Columns Y to AD)
+  // ==========================================
+  createSectionTitle(25, 6, "CLOSED HISTORY");
+  const historyRows = [['Action', 'Open Price', 'Open Date', 'Close Price', 'Close Date', 'P/L (%)']];
+  if (payload.history) {
+    payload.history.forEach(trade => historyRows.push([trade.action, trade.open, parseDate(trade.openDate), trade.close, parseDate(trade.closeDate), trade.pl]));
+  }
 
-  const apiKey = "YOUR_API_KEY_HERE"; 
-  const modelId = "gemini-2.0-flash"; 
-  const url = "https://generativelanguage.googleapis.com/v1beta/models/" + modelId + ":generateContent?key=" + apiKey;
+  let historyRange = sheet.getRange(2, 25, historyRows.length, 6);
+  historyRange.setValues(historyRows);
+  sheet.getRange(2, 25, 1, 6).setFontWeight('bold').setBackground('#2c3e50').setFontColor('white');
+  if (historyRows.length > 1) {
+    sheet.getRange(3, 27, historyRows.length - 1, 1).setNumberFormat('dd/MM/yyyy HH:mm').setHorizontalAlignment('center');
+    sheet.getRange(3, 29, historyRows.length - 1, 1).setNumberFormat('dd/MM/yyyy HH:mm').setHorizontalAlignment('center');
+    sheet.getRange(3, 26, historyRows.length - 1, 5).setHorizontalAlignment('center').setVerticalAlignment('middle');
+  }
+  historyRange.setBorder(true, true, true, true, true, true, '#e0e0e0', SpreadsheetApp.BorderStyle.SOLID);
+
+  // ==========================================
+  // GLOBAL FORMATTING ADJUSTMENTS
+  // ==========================================
+  sheet.setFrozenRows(2);
+  sheet.setRowHeight(1, 35);
   
-  const payload = {
-    "contents": [{ 
-      "parts": [{ 
-        "text": promptText + 
-                "\n\n[PORTFOLIO OVERVIEW]\n" + JSON.stringify(overviewRange) + 
-                "\n\n[PAST PERFORMANCE (YTD/MONTHLY)]\n" + JSON.stringify(statsRange) + 
-                "\n\n[ACTIVE TRADES]\n" + JSON.stringify(tradesRange) +
-                "\n\n[CLOSED HISTORY]\n" + JSON.stringify(historyRange)
-      }] 
-    }]
-  };
+  // Auto-fit specific columns
+  sheet.autoResizeColumn(1); 
+  sheet.autoResizeColumn(20); 
+  sheet.autoResizeColumn(25); 
+  
+  // Create separator columns
+  sheet.setColumnWidth(4, 30);
+  sheet.setColumnWidth(19, 30);
+  sheet.setColumnWidth(24, 30);
 
-  const options = { 
-      "method": "post", 
-      "contentType": "application/json", 
-      "payload": JSON.stringify(payload), 
-      "muteHttpExceptions": true 
-  };
+  // Focus back to Summary tab
+  ss.setActiveSheet(summarySheet);
 
-  try {
-    const response = UrlFetchApp.fetch(url, options);
-    const res = JSON.parse(response.getContentText());
-    if (res.error) return "API Error: " + res.error.message;
-    const resultText = res.candidates[0].content.parts[0].text;
-    cache.put(cacheKey, resultText, 21600); 
-    return resultText;
-  } catch (e) { return "Error: " + e.toString(); }
+  return ContentService.createTextOutput(`Success: Sheet ${traderName} updated.`).setMimeType(ContentService.MimeType.TEXT);
 }
 ```
 
@@ -200,9 +205,9 @@ function AI_PORTFOLIO_ANALYSIS(promptText, overviewRange, statsRange, tradesRang
    git clone https://github.com/Lior-Tor/eToro-scraper.git
    cd eToro-scraper
    ```
-2. Install dependencies:
+2. Install dependencies (including `exceljs` for local Excel exports and `puppeteer-extra` for anti-bot bypassing):
    ```bash
-   npm install
+   npm install puppeteer puppeteer-extra puppeteer-extra-plugin-stealth dotenv exceljs
    ```
 3. Copy the example environment file:
    ```bash
@@ -210,64 +215,117 @@ function AI_PORTFOLIO_ANALYSIS(promptText, overviewRange, statsRange, tradesRang
    ```
 4. Configure your `.env` file with your targets:
    ```env
+   # Leave WEBHOOK_URL empty if you only plan to export to local Excel/CSV
    WEBHOOK_URL=https://script.google.com/macros/s/your-webhook-url/exec
-   TRADER_USERNAME=example_trader_username
-   HISTORY_TRADES_TARGET=number_of_trades_to_scrape
+   
+   TRADER_USERNAME=example_username
+   MULTIPLE_TRADER_USERNAMES=trader1,trader2,trader3
+   HISTORY_TRADES_TARGET=500
    ```
 
 ### 3. Usage
-Run the scraper:
+Run the interactive CLI scraper:
 ```bash
 node index.js
 ```
-
-## 🧠 AI Financial Analysis & Insights
-
-You can analyze the gathered data using three different methods depending on your subscriptions and technical preferences. I recommend creating a **5th tab** named `Summary & Analysis` to perform these tasks.
-
-> **💡 Tip: Build a "Prompt Library"**
-> Use this tab to store a list of pre-defined prompts in different cells (e.g., "Risk Analysis," "Weekly Summary," "ETF Transition"). This allows you to quickly copy-paste them into your AI of choice or reference them directly in your formulas.
-
-### Option A: Custom Script (Free / Developer Choice)
-This method uses the built-in `AI_PORTFOLIO_ANALYSIS` function.
-* **Setup:** Ensure your [Google AI Studio API Key](https://aistudio.google.com/) is pasted in `AppScript.gs`.
-* **Formula:** `=AI_PORTFOLIO_ANALYSIS(A1, Overview!A2:C100, 'Past Performance'!A1:N20, 'Trades History'!A2:D500, 'Closed History'!A2:G1000)` *(where **A1** is your prompt cell)*.
-
-### Option B: Native "Ask Gemini" (Paid Google Users)
-If you have a paid **Google Gemini** subscription:
-* Open the Gemini side panel (top right ✨ icon) directly inside Google Sheets.
-* Simply copy a prompt from your **Prompt Library** on the sheet and paste it into the chat. Gemini will automatically read your active sheets and provide a conversational response.
-
-### Option C: External AI Connectors (ChatGPT, Claude, Gemini, etc.)
-If you prefer using other Large Language Models like ChatGPT, Claude, or Gemini:
-* **Native Drive Connectors:** Connect your Google Drive directly to your LLM (e.g., ChatGPT, Claude, or Gemini). Once authorized, simply ask the AI to read your specific Google Sheet and paste your prompt.
-* **Manual Upload:** Go to `File > Download > Microsoft Excel (.xlsx)` or `.csv`, and upload the file directly into ChatGPT, Claude, or Gemini along with your prompt.
-* **Workspace Add-ons:** Install popular extensions like [GPT for Sheets](https://workspace.google.com/marketplace/app/gpt_for_sheets_and_docs/677318054654), Claude for Sheets, or Gemini add-ons. This allows you to use functions like `=GPT(prompt, range)` natively, mimicking the behavior of Option A but with your preferred AI provider.
+You will be prompted to select **Single** or **Multiple** trader mode, followed by your preferred export destination (Sheets, Excel, CSV).
 
 ---
 
-### 📝 Master Example Prompt (Quantitative Analyst)
-Copy and paste this prompt to get a deep quantitative analysis utilizing all **four datasets**:
+## 🧠 AI Financial Analysis & Insights
 
-> *"Act as a hedge fund-level quantitative financial analyst specializing in asset allocation, behavioral finance, and ETF portfolio construction. You are analyzing data from an eToro trader based on **four** datasets: a **Portfolio Overview** containing current positions with invested percentages and P/L, a **Past Performance** detailing historical monthly and yearly returns, an **Active Trades** containing open positions with their percentage size and entry price, and a **Closed History** containing the complete history of closed trades with prices, dates, and P/L. Your mission is to produce a reliable, data-driven, critical, and highly actionable analysis.*
+You can analyze the gathered data using modern AI tools. I recommend creating a tab named `Summary & Analysis` in your spreadsheet to store a "Prompt Library" for quick copy-pasting.
+
+### Option A: External AI Connectors (Recommended)
+With the latest updates to AI platforms, analyzing large datasets is easier than ever:
+* **Upload Local Files:** Use the scraper's CLI option `[2]` or `[3]` to generate a local `.xlsx` or `.csv` file. Drag and drop this file directly into Claude, ChatGPT, or Gemini along with your prompt library.
+* **Native Drive Connectors:** Connect your Google Drive directly to your LLM. Ask the AI to read your specific Google Sheet.
+
+### Option B: Native "Ask Gemini" (Google Workspace)
+If you have a paid Google Gemini subscription, open the Gemini side panel (top right ✨ icon) directly inside Google Sheets. Paste your prompt, and Gemini will automatically read the context of your active sheet.
+
+### Option C: API Automation (For Developers)
+If you wish to fully automate the analysis within Google Sheets without manual drag-and-drop:
+1. Generate an API Key from Google AI Studio, OpenAI, or Claude.
+2. Write a custom Google Apps Script function using `UrlFetchApp` to send the `JSON.stringify(sheetData)` directly to the API endpoint.
+3. Parse the response and write it back into your `Summary & Analysis` tab. 
+
+---
+
+## 🧠 Master Prompt Library (AI Financial Analysis)
+
+Because this tool bypasses social noise and extracts pure data, you can choose how to analyze a trader. Create a `Summary & Analysis` tab in your spreadsheet to store these prompts, then paste them into your favorite AI (ChatGPT, Claude 3.5 Sonnet, or Gemini) along with your scraped files.
+
+Choose the analytical lens that best fits your goals:
+
+### 📊 Prompt 1: The Quantitative Analyst (Math, Stats & Risk Focus)
+*Use this prompt to evaluate a trader purely on the numbers: risk/reward ratios, drawdowns, win rates, and mathematical concentration.*
+
+> *"Act as a hedge fund-level quantitative financial analyst specializing in asset allocation, behavioral finance, and ETF portfolio construction. You are analyzing data from one or multiple eToro traders/investors. The data is provided in a document where each tab corresponds to a specific trader (named for example `@username`). **If there is only one tab in the document, you will only analyze that unique trader.** Within each tab, you will find four tables placed side-by-side in columns: a **Portfolio Overview** containing current positions with invested percentages and P/L, a **Past Performance** detailing historical monthly and yearly returns, an **Active Trades** containing open positions with their percentage size and entry price, and a **Closed History** containing the history of closed trades with prices, dates, and P/L (attention: this Closed History only goes back 1 year maximum). Your mission is to produce a reliable, data-driven, critical, and highly actionable quantitative analysis.*
 > 
 > *Before anything else, if certain data is missing or incomplete, you must explicitly point it out and adapt your analysis accordingly. Do not make unjustified speculative assumptions. Calculations can be approximate but must remain consistent. Absolute priority is reliability over exhaustiveness.*
 > 
-> *Begin by briefly evaluating the current macroeconomic context, identifying the direction of interest rates and their impact, the level and trend of inflation, geopolitical tensions, monetary policy stance, and the market regime (risk-on or risk-off). Conclude in a few lines with concrete implications for asset allocation, particularly between equities, commodities, and other asset classes, staying concise and avoiding generalities.*
+> *Begin by briefly evaluating the current macroeconomic context, identifying the direction of interest rates and their impact, the level and trend of inflation, geopolitical tensions, monetary policy stance, and the market regime (risk-on or risk-off). Conclude in a few lines with concrete implications for asset allocation, staying concise and avoiding generalities.*
 > 
-> *Next, analyze the portfolio by detailing the breakdown by asset class, dominant sector exposure, and implicit geographic exposure. Evaluate the concentration level by identifying the main positions and assessing whether concentration is low, moderate, or high. Analyze true diversification by identifying implicit correlations between positions, especially sectoral or geographic clusters, and detect cases of false diversification. Conclude with a clear diagnosis of the portfolio's coherence regarding the macroeconomic context.*
+> *Next, analyze the portfolio quantitatively by detailing the breakdown by asset class, dominant sector exposure, and implicit geographic exposure. Evaluate the concentration level mathematically. Analyze true diversification by identifying implicit statistical correlations between positions, and detect cases of false diversification. Conclude with a clear diagnosis of the portfolio's coherence regarding the macro context.*
 > 
-> *Continue with a deep behavioral and performance analysis based on the **Past Performance**, **Closed History**, and **Active Trades**. Specifically use the **Past Performance** to evaluate long-term gain consistency, identify major drawdowns (how did the trader react during market shocks?), and judge overall resilience. Evaluate position sizing by estimating the average position size and its consistency. Roughly calculate the win rate, average win, and average loss via the closed history to deduce an implicit risk/reward ratio. Analyze risk management by identifying the tendency to cut or hold losses, potential bag holding, and signs of poor drawdown control. Mandatorily identify behavioral patterns by naming each bias (loss aversion, disposition effect, FOMO, overtrading), providing concrete proof from the data, and explaining its impact on performance. Also, analyze the trading style (frequency, holding period, type). Conclude with a clear and synthetic psychological profile of the trader.*
+> *Continue with a deep behavioral and performance analysis. The analysis of the **Past Performance** dataset is of absolute importance: you must imperatively dissect all the provided historical years and months to extract the trader's true underlying trend. Use these long-term returns to evaluate gain consistency, identify major drawdowns (how did the trader react during market shocks?), and judge overall resilience. Evaluate position sizing consistency. Roughly calculate the win rate, average win, and average loss via the closed history to deduce an implicit risk/reward ratio. Analyze risk management by identifying the tendency to cut or hold losses, potential bag holding, and signs of poor drawdown control. You must mandatorily identify behavioral patterns by naming each cognitive bias (loss aversion, disposition effect, FOMO, overtrading), providing concrete proof directly from the data, and explaining its impact on performance. Conclude with a clear and synthetic psychological profile.*
 > 
-> *Then, transform this portfolio into an ETF-based strategy with a primary goal of replicating the trader's exposures, not discretionary reallocation. The objective is to capture the same sectoral, geographic, and factor biases while simplifying the structure via ETFs. You must reason by exposure clusters (e.g., if the trader holds RTX or Lockheed Martin, propose ITA). Propose concrete ETFs with their tickers and suggest similar alternatives when relevant. Each ETF must explicitly correspond to a cluster from the initial portfolio. For each ETF, explain exactly which exposure it replicates, any residual differences, and the improvements made (diversification, costs) without significantly altering the risk profile. Provide a target percentage allocation; if the trader holds cash, this component must be explicitly preserved in the final allocation.*
+> *Then, transform this portfolio into an ETF-based strategy with a primary goal of replicating the trader's exposures, not discretionary reallocation. You must reason by exposure clusters. **For each identified cluster, propose between 1 and 4 ETFs.** These ETFs must be surgically precise: if a cluster (like energy) contains both US and international stocks, you must propose multiple ETFs (e.g., a US ETF like XLE AND a Global ETF like IXC) to accurately reflect this geographic nuance within the same theme. For each proposed ETF, provide its exact ticker, explain exactly which exposure it replicates, any residual differences, and the improvements made. Provide a target percentage allocation for each ETF; explicitly preserve cash allocations if present.*
 > 
-> *Next, provide a highly critical final diagnosis by identifying the top three major structural errors of the trader based purely on the data, with direct and unfiltered explanations. Then concretely explain what a professional would do differently with specific, immediately applicable actions, without staying theoretical.*
+> *Next, provide a highly critical final diagnosis by identifying the top three major structural errors of the trader based purely on the data, with direct and unfiltered explanations. Then concretely explain what a professional would do differently with precise, immediately applicable actions, without staying theoretical.*
 > 
 > *Directly leverage the **Past Performance** data to compare the trader's annual returns against a simple benchmark like the S&P 500 or MSCI World. Evaluate true alpha creation: does the outperformance justify the risk taken and time invested compared to passive holding?*
 > 
-> *Finally, assign an overall score out of 100 based on risk management, coherence, discipline, and portfolio construction, briefly justifying this score.*
+> *Assign an overall score out of 100 based on risk management, coherence, discipline, and portfolio construction, briefly justifying this score.*
 > 
-> *The response must be structured, concise, analytical, free of fluff, and every conclusion must be directly linked to an observation from the data."*
+> *The response must be structured, concise, analytical, free of fluff, and every conclusion must be directly linked to an observation from the data. **Finally, if (and only if) you analyzed multiple traders in the document, conclude your overall response with a simple summary table listing each trader and all the ETFs you selected to replicate their portfolio.***"
+
+### 📖 Prompt 2: The Qualitative Analyst (Narrative, Moats & Conviction Focus)
+*Use this prompt to decode the "story" behind the portfolio. It ignores the heavy math to focus on the trader's investment thesis, thematic choices, and company quality.*
+
+> *"Act as a fundamental equity analyst and thematic portfolio manager. You are analyzing data from one or multiple eToro traders/investors. The data is provided in a document where each tab corresponds to a specific trader (named for example `@username`). **If there is only one tab in the document, you will only analyze that unique trader.** Within each tab, you will find four tables placed side-by-side in columns: a **Portfolio Overview**, **Past Performance**, **Active Trades**, and a **Closed History** (max 1 year history). Your mission is to decode the fundamental investment thesis, thematic convictions, and narrative behind the trader's choices to produce a critical and highly actionable qualitative analysis.*
+> 
+> *Before anything else, point out any missing data and adapt your analysis without making unjustified speculative assumptions. Absolute priority is reliability.*
+> 
+> *Begin by briefly evaluating the current macroeconomic themes driving the market (e.g., AI revolution, energy transition, supply chain shifts) and how they fit into current monetary policies and geopolitical tensions. Conclude with concrete implications for asset allocation.*
+> 
+> *Next, analyze the portfolio qualitatively. Decode the trader's fundamental "Investment Thesis". What is the narrative? Are they betting on technological disruption, classic dividend resilience, or commodity cycles? Evaluate the perceived fundamental quality of the held companies (economic moats, pricing power, competitive advantage) rather than just statistical weight. Detect cases of thematic false diversification. Conclude with a clear diagnosis of the portfolio's thematic coherence.*
+> 
+> *Continue with a deep behavioral and conviction analysis. The analysis of the **Past Performance** dataset is of absolute importance: you must imperatively dissect all historical years and months to extract the trader's true underlying trend. Use these long-term returns to evaluate conviction during major drawdowns (do they hold through volatility or panic sell?). Review the Active Trades and Closed History to assess if trades are driven by deep research or chasing recent market hype. You must mandatorily identify behavioral patterns (loss aversion, disposition effect, narrative fallacy, FOMO), providing concrete proof directly from the data. Conclude with a clear profile of their investment philosophy.*
+> 
+> *Transform this portfolio into a thematic ETF-based strategy prioritizing exposure replication. Reason by narrative clusters (e.g., if they hold PLTR and CRWD, form a "Cyber-Defense" cluster). **For each identified cluster, propose between 1 and 4 thematic or fundamental ETFs.** These ETFs must be surgically precise: if a thematic cluster contains both US and international moats, propose multiple ETFs (e.g., XLE AND IXC) to accurately reflect this geographic nuance within the same theme. For each ETF, provide its exact ticker, explain the thematic exposure it replicates, and propose a target percentage allocation. Preserve cash allocations if present.*
+> 
+> *Next, provide a highly critical final diagnosis identifying the top three fundamental errors of the trader (e.g., buying hype without moats, ignoring valuation), with direct and unfiltered explanations. Then concretely explain what a fundamental professional would do differently with precise, immediately applicable actions, without staying theoretical.*
+> 
+> *Directly leverage the **Past Performance** data to compare the trader's annual returns against a benchmark like the S&P 500 or MSCI World. Evaluate true alpha creation: does the thematic stock-picking outperformance justify the risk compared to passive holding?*
+> 
+> *Assign an overall score out of 100 based on conviction, thematic coherence, and fundamental asset quality.*
+> 
+> *The response must be structured, concise, and free of fluff. **Finally, if (and only if) you analyzed multiple traders in the document, conclude your overall response with a simple summary table listing each trader and all the ETFs you selected to replicate their fundamental themes.***"
+
+### 🎯 Prompt 3: The "Quantamental" Analyst (The Hybrid Approach)
+*The ultimate analysis. It blends rigorous statistical risk management with deep fundamental equity analysis to give you a 360-degree view.*
+
+> *"Act as a 'Quantamental' Hedge Fund Portfolio Manager, combining rigorous statistical risk management (Quant) with deep fundamental equity analysis (Qual). You are analyzing the profile and data of one or multiple eToro traders/investors. The data is provided in a document where each tab corresponds to a specific trader (named for example `@username`). **If there is only one tab in the document, you will only analyze that unique trader.** Within each tab, you will find four tables placed side-by-side in columns: a **Portfolio Overview** containing current positions with invested percentages and P/L, a **Past Performance** detailing historical monthly and yearly returns, an **Active Trades** containing open positions with their percentage size and entry price, and a **Closed History** containing the history of closed trades with prices, dates, and P/L (attention: this Closed History only goes back 1 year maximum). Your mission is to produce a holistic, reliable, critical, and highly actionable 'quantamental' analysis that perfectly bridges the gap between numbers and narratives.*
+> 
+> *Before anything else, if certain data is missing or incomplete, you must explicitly point it out and adapt your analysis accordingly. Do not make unjustified speculative assumptions. Calculations can be approximate but must remain consistent. Absolute priority is reliability over exhaustiveness.*
+> 
+> *Begin by briefly evaluating the current macroeconomic context: combine the mathematical assessment of the interest rate and inflation environment (quantitative approach) with the analysis of dominant market narratives and geopolitical tensions (qualitative approach). Conclude in a few lines with concrete implications for asset allocation, particularly between equities, commodities, and others, staying concise and avoiding generalities.*
+> 
+> *Next, analyze the portfolio holistically. Quantitatively evaluate the breakdown by asset class, the mathematical concentration by identifying the weight of the main positions, and the implicit statistical correlations between them. Qualitatively evaluate the economic 'moats' (competitive advantages) and the fundamental relevance of the chosen thematic clusters. Explicitly answer this: does the statistical risk taken (concentration, volatility) align with a coherent fundamental thesis, or is it simply random stock-picking masking false diversification?*
+> 
+> *Continue with a deep behavioral and performance analysis. The analysis of the **Past Performance** dataset is of absolute importance: you must imperatively dissect all the provided historical years and months. Use this data to evaluate mathematical resilience during major drawdowns (Quant) and assess via the Active Trades and Closed History whether holding periods reflect true fundamental conviction or stubborn 'bag-holding' in the face of losses (Qual). Roughly calculate the win rate, average win, and average loss via the closed history to deduce an implicit risk/reward ratio. You must mandatorily identify behavioral patterns by naming each bias (loss aversion, disposition effect, FOMO, overtrading), providing concrete numerical proof directly from the data, and explaining its impact. Conclude with a clear and synthetic psychological profile of the trader.*
+> 
+> *Then, transform this portfolio into a Smart-Beta/Thematic ETF strategy with a primary goal of replicating the exposures, not discretionary reallocation. You must reason by exposure clusters, combining both approaches: blend factor/smart-beta ETFs (for quantitative risk control, e.g., Minimum Volatility, Quality) with purely thematic ETFs (to capture qualitative conviction). **For each identified cluster, propose between 1 and 4 ETFs.** These ETFs must be surgically precise: if a cluster (like energy) contains both US and international stocks, you must propose multiple ETFs (e.g., a US ETF like XLE AND a Global ETF like IXC) to accurately reflect this geographic nuance. For each proposed ETF, provide its exact ticker, explain precisely the exposure it replicates, and propose a target percentage allocation. Cash must be explicitly preserved in the final allocation if present.*
+> 
+> *Next, provide a highly critical final diagnosis by identifying the top three major structural errors of the trader with direct and unfiltered explanations. You must mix fundamental flaws (such as ignoring valuations or moats) with mathematical flaws (such as over-concentration or poor risk/reward). Then concretely explain what a professional would do differently with precise, immediately applicable actions, without staying theoretical.*
+> 
+> *Directly leverage the **Past Performance** data to compare the trader's annual returns against a simple benchmark like the S&P 500 or MSCI World. Evaluate the creation of true Alpha over the long term: does the outperformance justify the quantitative risk taken compared to passive holding?*
+> 
+> *Finally, assign an overall 'Quantamental' score out of 100, weighting mathematical/statistical discipline and fundamental thematic vision equally, briefly justifying this score.*
+> 
+> *The response must be highly structured, concise, analytical, free of fluff, and every conclusion must be directly linked to an observation from the data. **Finally, if (and only if) you analyzed multiple traders/investors in the document, conclude your overall response with a simple summary table listing each trader/investor and all the ETFs you selected to replicate their portfolio.***
 
 ---
 

@@ -19,6 +19,9 @@
   "homepage": "https://github.com/Lior-Tor/eToro-scraper#readme",
   "dependencies": {
     "dotenv": "^17.3.1",
-    "puppeteer": "^24.39.1"
+    "exceljs": "^4.4.0",
+    "puppeteer": "^24.39.1",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
   }
 }
