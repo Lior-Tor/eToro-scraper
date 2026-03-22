@@ -15,14 +15,20 @@ Tracking copy-traders efficiently requires looking beyond just their current hol
 
 ```text
 .
-├── node_modules/       # Installed dependencies
-├── .env                # Private credentials (Webhook URL, Trader Usernames)
-├── .env.example        # Template for environment variables
-├── .gitignore          # Tells Git to ignore .env, node_modules, and local data files
-├── index.js            # Main Puppeteer scraping and export logic
-├── package-lock.json   # Exact versions of dependencies
-├── package.json        # Project metadata and dependencies
-└── README.md           # Documentation
+├── node_modules/           # Installed dependencies
+├── src/
+│   ├── scraper.js          # Puppeteer logic — all 4 scraping phases
+│   └── exporters/
+│       ├── sheets.js       # Google Sheets webhook upload
+│       ├── excel.js        # Local Excel (.xlsx) generation
+│       └── csv.js          # Local CSV generation
+├── .env                    # Private credentials (Webhook URL, Trader Usernames)
+├── .env.example            # Template for environment variables
+├── .gitignore              # Tells Git to ignore .env, node_modules, and local data files
+├── index.js                # CLI, browser setup, and orchestration
+├── package-lock.json       # Exact versions of dependencies
+├── package.json            # Project metadata and dependencies
+└── README.md               # Documentation
 ```
 *(Note: The Google Apps Script code is hosted on Google Servers and is provided in the setup instructions below, not in the local file tree.)*
 
