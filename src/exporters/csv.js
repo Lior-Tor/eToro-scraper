@@ -7,7 +7,10 @@ function generateCsv(allData, fileName) {
     allData.forEach(data => {
         csvContent += `=== START OF TRADER: @${data.traderUsername} ===\n\n`;
 
-        csvContent += "--- OVERVIEW ---\nTicker,Invested (%),P/L (%)\n";
+        csvContent += "--- LATEST POSTS ---\nPost #,Content\n";
+        (data.posts || []).forEach((p, i) => csvContent += `${s('#' + (i + 1))},${s(p)}\n`);
+
+        csvContent += "\n--- OVERVIEW ---\nTicker,Invested (%),P/L (%)\n";
         data.overview.forEach(r => csvContent += `${s(r.ticker)},${s(r.invested)},${s(r.pl)}\n`);
 
         csvContent += "\n--- PAST PERFORMANCE ---\nYear,Jan,Feb,Mar,Apr,May,Jun,Jul,Aug,Sep,Oct,Nov,Dec,YTD\n";

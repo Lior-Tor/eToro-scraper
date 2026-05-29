@@ -13,15 +13,15 @@ async function scrapeTrader(browser, trader, targetHistoryTrades, isFirstBatch) 
         return null;
     }
 
-    const payload = { type: "full_portfolio", traderUsername: trader, isFirstBatch, overview: [], stats: [], trades: [], history: [] };
+    const payload = { type: "full_portfolio", traderUsername: trader, isFirstBatch, posts: [], overview: [], stats: [], trades: [], history: [] };
 
     try {
         // --- PHASE 1: OVERVIEW ---
         console.log(`🌐 [PHASE 1] Navigating to ${trader}'s portfolio...`);
-        await page.goto(`https://www.etoro.com/people/${trader}/portfolio`, { waitUntil: 'networkidle2' });
+        await page.goto(`https://www.etoro.com/people/${trader}/portfolio`, { waitUntil: 'domcontentloaded' });
 
         try {
-            await page.waitForSelector('.et-table-body > div', { timeout: 10000 });
+            await page.waitForSelector('.et-table-body > div', { timeout: 30000 });
         } catch (e) {
             console.error(`❌ ERROR: Could not find portfolio for '${trader}'. The user might not exist or profile is private. Skipping...`);
             return null;
@@ -41,8 +41,8 @@ async function scrapeTrader(browser, trader, targetHistoryTrades, isFirstBatch) 
 
         // --- PHASE 2: PAST PERFORMANCE STATS ---
         console.log(`📊 [PHASE 2] Extracting Past Performance...`);
-        await page.goto(`https://www.etoro.com/people/${trader}/stats`, { waitUntil: 'networkidle2' });
-        await page.waitForSelector('et-user-performance-chart-new', { timeout: 15000 });
+        await page.goto(`https://www.etoro.com/people/${trader}/stats`, { waitUntil: 'domcontentloaded' });
+        await page.waitForSelector('et-user-performance-chart-new', { timeout: 30000 });
 
         try {
             const hasClicked = await page.evaluate(() => {
@@ -72,8 +72,8 @@ async function scrapeTrader(browser, trader, targetHistoryTrades, isFirstBatch) 
         console.log(`🔄 [PHASE 3] Extracting active trades...`);
         for (const asset of payload.overview) {
             try {
-                await page.goto(`https://www.etoro.com/people/${trader}/portfolio/${asset.ticker.toLowerCase()}`, { waitUntil: 'networkidle2' });
-                await page.waitForSelector('.et-table-body > div', { timeout: 10000 });
+                await page.goto(`https://www.etoro.com/people/${trader}/portfolio/${asset.ticker.toLowerCase()}`, { waitUntil: 'domcontentloaded' });
+                await page.waitForSelector('.et-table-body > div', { timeout: 30000 });
                 const tickerTrades = await page.evaluate((currentTicker) => {
                     const rows = Array.from(document.querySelectorAll('.et-table-body > div'));
                     const results = [];
@@ -96,8 +96,8 @@ async function scrapeTrader(browser, trader, targetHistoryTrades, isFirstBatch) 
 
         // --- PHASE 4: CLOSED HISTORY ---
         console.log(`🕰️  [PHASE 4] Extracting closed history (~${targetHistoryTrades} trades targeted)...`);
-        await page.goto(`https://www.etoro.com/people/${trader}/portfolio/history`, { waitUntil: 'networkidle2' });
-        await page.waitForSelector('#publicHistoryFlatView', { timeout: 15000 });
+        await page.goto(`https://www.etoro.com/people/${trader}/portfolio/history`, { waitUntil: 'domcontentloaded' });
+        await page.waitForSelector('#publicHistoryFlatView', { timeout: 30000 });
 
         let clickCount = 0;
         while (true) {
@@ -154,6 +154,43 @@ async function scrapeTrader(browser, trader, targetHistoryTrades, isFirstBatch) 
             return results;
         });
         console.log(`✅ Extracted ${payload.history.length} historical trades.`);
+
+        // --- PHASE 5: LATEST POSTS (scraped last on purpose) ---
+        // The feed is a live page that lazy-loads posts only on scroll, making it the slowest and
+        // most fragile extraction. It runs last so a posts failure can never discard or delay the
+        // core portfolio/stats/history data already gathered; the whole phase is non-fatal.
+        // (Output order is set by the exporters, so posts still appear first in the files.)
+        console.log(`📝 [PHASE 5] Extracting latest posts...`);
+        try {
+            await page.goto(`https://www.etoro.com/people/${trader}`, { waitUntil: 'domcontentloaded' });
+
+            // The feed lazy-loads on scroll — nudge the page down until posts render.
+            for (let i = 0; i < 5; i++) {
+                if (await page.$('[automation-id="show-hide-post-main-body"]')) break;
+                await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+                await delay(2000);
+            }
+            await page.waitForSelector('[automation-id="show-hide-post-main-body"]', { timeout: 10000 });
+
+            // Expand any truncated posts so we capture the full text
+            await page.evaluate(() => {
+                const bodies = Array.from(document.querySelectorAll('[automation-id="show-hide-post-main-body"]')).slice(0, 3);
+                bodies.forEach(body => {
+                    const container = body.closest('et-showhide') || body.parentElement;
+                    const btn = container?.querySelector('[automation-id="bio-info-toggle-show-button"]');
+                    if (btn) btn.click();
+                });
+            });
+            await delay(1500);
+
+            payload.posts = await page.evaluate(() => {
+                const bodies = Array.from(document.querySelectorAll('[automation-id="show-hide-post-main-body"]')).slice(0, 3);
+                return bodies.map(b => b.innerText.trim()).filter(t => t.length > 0);
+            });
+        } catch (e) {
+            // Feed slow/absent or trader has no posts — non-fatal, keep the core data.
+        }
+        console.log(`✅ Extracted ${payload.posts.length} posts.`);
 
         return payload;
 

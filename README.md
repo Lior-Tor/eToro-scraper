@@ -5,9 +5,9 @@ This automated Node.js pipeline acts as a professional multi-trader screener. It
 ## 🚀 Overview
 
 Tracking copy-traders efficiently requires looking beyond just their current holdings. This tool extracts the hard data needed to bypass the "social noise" on eToro and perform real financial analysis:
-1. **Multi-Trader Extraction:** A Node.js script uses Puppeteer to sequentially scrape the global portfolio, historical performance (monthly/yearly), active trades, and closed trades history for one or multiple target users.
+1. **Multi-Trader Extraction:** A Node.js script uses Puppeteer to sequentially scrape the latest posts, global portfolio, historical performance (monthly/yearly), active trades, and closed trades history for one or multiple target users.
 2. **7-Option Interactive CLI:** Choose your destination before scraping. Export directly to Google Sheets (via Webhook), local `.xlsx` files, `.csv` files, or any combination of the three.
-3. **Storage & UI:** - **Google Sheets:** Receives the data via a secure POST request, auto-formats it with professional styling (Midnight Blue themes), and creates a dedicated tab for each trader (e.g., `@username`) with the four datasets placed side-by-side.
+3. **Storage & UI:** - **Google Sheets:** Receives the data via a secure POST request, auto-formats it with professional styling (Midnight Blue themes), and creates a dedicated tab for each trader (e.g., `@username`) with the latest posts as a top band above the four datasets placed side-by-side.
    - **Local Files:** Generates beautiful consolidated Excel files or AI-friendly CSV files directly on your machine.
 4. **Three-Dimensional AI Insights:** Because the scraper extracts pure, unbiased data, you can feed it to Large Language Models (LLMs) to perform **Quantitative** (stats & risk), **Qualitative** (themes & moats), or **Hybrid** analysis.
 
@@ -81,7 +81,9 @@ function doPost(e) {
     // Insert new trader sheet AFTER "Summary & Analysis"
     sheet = ss.insertSheet(traderName, ss.getSheets().length);
   } else {
-    sheet.clear(); 
+    sheet.clear();
+    // Break apart any merges left over from a previous layout before re-rendering
+    sheet.getRange(1, 1, sheet.getMaxRows(), sheet.getMaxColumns()).breakApart();
   }
 
   // Helper to safely parse eToro dates
@@ -94,16 +96,45 @@ function doPost(e) {
      return dStr;
   };
 
+  // The posts band occupies rows 1-4; the data sections start below it.
+  const SECTION_TITLE_ROW = 6;  // OVERVIEW, PAST PERFORMANCE, etc.
+  const HEADER_ROW = 7;         // column headers
+  const DATA_ROW = 8;           // first data row
+
   // Helper to cleanly merge cells and apply Midnight Blue styling
   const createSectionTitle = (colStart, colCount, title) => {
-      let titleRange = sheet.getRange(1, colStart, 1, colCount);
+      let titleRange = sheet.getRange(SECTION_TITLE_ROW, colStart, 1, colCount);
       titleRange.clearContent();
-      sheet.getRange(1, colStart).setValue(title); 
+      sheet.getRange(SECTION_TITLE_ROW, colStart).setValue(title); 
       titleRange.mergeAcross()
                 .setFontWeight('bold').setFontSize(11)
                 .setBackground('#ecf0f1').setFontColor('#2c3e50')
                 .setHorizontalAlignment('center').setVerticalAlignment('middle');
   };
+
+  // ==========================================
+  // SECTION: LATEST POSTS (Top band, Columns A to R)
+  // ==========================================
+  let postsTitleRange = sheet.getRange(1, 1, 1, 18);
+  postsTitleRange.clearContent();
+  sheet.getRange(1, 1).setValue("LATEST POSTS");
+  postsTitleRange.mergeAcross()
+                 .setFontWeight('bold').setFontSize(11)
+                 .setBackground('#ecf0f1').setFontColor('#2c3e50')
+                 .setHorizontalAlignment('center').setVerticalAlignment('middle');
+
+  const posts = payload.posts || [];
+  for (let i = 0; i < 3; i++) {
+    const rowNum = 2 + i; // rows 2, 3, 4
+    sheet.getRange(rowNum, 1).setValue('#' + (i + 1))
+         .setFontWeight('bold').setBackground('#2c3e50').setFontColor('white')
+         .setHorizontalAlignment('center').setVerticalAlignment('middle');
+    let postTextRange = sheet.getRange(rowNum, 2, 1, 17); // Columns B to R
+    postTextRange.merge();
+    sheet.getRange(rowNum, 2).setValue(posts[i] || "")
+         .setHorizontalAlignment('left').setVerticalAlignment('top').setWrap(true);
+    sheet.setRowHeight(rowNum, 60);
+  }
 
   // ==========================================
   // SECTION: OVERVIEW (Columns A, B, C)
@@ -112,10 +143,10 @@ function doPost(e) {
   const overviewRows = [['Ticker', 'Invested (%)', 'P/L (%)']];
   if (payload.overview) payload.overview.forEach(item => overviewRows.push([item.ticker, item.invested, item.pl]));
   
-  let overRange = sheet.getRange(2, 1, overviewRows.length, 3);
+  let overRange = sheet.getRange(HEADER_ROW, 1, overviewRows.length, 3);
   overRange.setValues(overviewRows);
-  sheet.getRange(2, 1, 1, 3).setFontWeight('bold').setBackground('#2c3e50').setFontColor('white');
-  if (overviewRows.length > 1) sheet.getRange(3, 2, overviewRows.length - 1, 2).setHorizontalAlignment('center').setVerticalAlignment('middle');
+  sheet.getRange(HEADER_ROW, 1, 1, 3).setFontWeight('bold').setBackground('#2c3e50').setFontColor('white');
+  if (overviewRows.length > 1) sheet.getRange(DATA_ROW, 2, overviewRows.length - 1, 2).setHorizontalAlignment('center').setVerticalAlignment('middle');
   overRange.setBorder(true, true, true, true, true, true, '#e0e0e0', SpreadsheetApp.BorderStyle.SOLID);
 
   // ==========================================
@@ -127,10 +158,10 @@ function doPost(e) {
     payload.stats.forEach(s => statsRows.push([s.year, s.jan, s.feb, s.mar, s.apr, s.may, s.jun, s.jul, s.aug, s.sep, s.oct, s.nov, s.dec, s.ytd]));
   }
   
-  let statsRange = sheet.getRange(2, 5, statsRows.length, 14);
+  let statsRange = sheet.getRange(HEADER_ROW, 5, statsRows.length, 14);
   statsRange.setValues(statsRows);
-  sheet.getRange(2, 5, 1, 14).setFontWeight('bold').setBackground('#2c3e50').setFontColor('white');
-  if (statsRows.length > 1) sheet.getRange(3, 5, statsRows.length - 1, 14).setHorizontalAlignment('center').setVerticalAlignment('middle');
+  sheet.getRange(HEADER_ROW, 5, 1, 14).setFontWeight('bold').setBackground('#2c3e50').setFontColor('white');
+  if (statsRows.length > 1) sheet.getRange(DATA_ROW, 5, statsRows.length - 1, 14).setHorizontalAlignment('center').setVerticalAlignment('middle');
   statsRange.setBorder(true, true, true, true, true, true, '#e0e0e0', SpreadsheetApp.BorderStyle.SOLID);
 
   // ==========================================
@@ -148,12 +179,12 @@ function doPost(e) {
     payload.trades.forEach(trade => tradesRows.push([trade.action, parseDate(trade.date), trade.amount, trade.openPrice]));
   }
   
-  let tradesRange = sheet.getRange(2, 20, tradesRows.length, 4);
+  let tradesRange = sheet.getRange(HEADER_ROW, 20, tradesRows.length, 4);
   tradesRange.setValues(tradesRows);
-  sheet.getRange(2, 20, 1, 4).setFontWeight('bold').setBackground('#2c3e50').setFontColor('white');
+  sheet.getRange(HEADER_ROW, 20, 1, 4).setFontWeight('bold').setBackground('#2c3e50').setFontColor('white');
   if (tradesRows.length > 1) {
-    sheet.getRange(3, 21, tradesRows.length - 1, 1).setNumberFormat('dd/MM/yyyy HH:mm').setHorizontalAlignment('center');
-    sheet.getRange(3, 22, tradesRows.length - 1, 2).setHorizontalAlignment('center').setVerticalAlignment('middle');
+    sheet.getRange(DATA_ROW, 21, tradesRows.length - 1, 1).setNumberFormat('dd/MM/yyyy HH:mm').setHorizontalAlignment('center');
+    sheet.getRange(DATA_ROW, 22, tradesRows.length - 1, 2).setHorizontalAlignment('center').setVerticalAlignment('middle');
   }
   tradesRange.setBorder(true, true, true, true, true, true, '#e0e0e0', SpreadsheetApp.BorderStyle.SOLID);
 
@@ -166,20 +197,20 @@ function doPost(e) {
     payload.history.forEach(trade => historyRows.push([trade.action, trade.open, parseDate(trade.openDate), trade.close, parseDate(trade.closeDate), trade.pl]));
   }
 
-  let historyRange = sheet.getRange(2, 25, historyRows.length, 6);
+  let historyRange = sheet.getRange(HEADER_ROW, 25, historyRows.length, 6);
   historyRange.setValues(historyRows);
-  sheet.getRange(2, 25, 1, 6).setFontWeight('bold').setBackground('#2c3e50').setFontColor('white');
+  sheet.getRange(HEADER_ROW, 25, 1, 6).setFontWeight('bold').setBackground('#2c3e50').setFontColor('white');
   if (historyRows.length > 1) {
-    sheet.getRange(3, 27, historyRows.length - 1, 1).setNumberFormat('dd/MM/yyyy HH:mm').setHorizontalAlignment('center');
-    sheet.getRange(3, 29, historyRows.length - 1, 1).setNumberFormat('dd/MM/yyyy HH:mm').setHorizontalAlignment('center');
-    sheet.getRange(3, 26, historyRows.length - 1, 5).setHorizontalAlignment('center').setVerticalAlignment('middle');
+    sheet.getRange(DATA_ROW, 27, historyRows.length - 1, 1).setNumberFormat('dd/MM/yyyy HH:mm').setHorizontalAlignment('center');
+    sheet.getRange(DATA_ROW, 29, historyRows.length - 1, 1).setNumberFormat('dd/MM/yyyy HH:mm').setHorizontalAlignment('center');
+    sheet.getRange(DATA_ROW, 26, historyRows.length - 1, 5).setHorizontalAlignment('center').setVerticalAlignment('middle');
   }
   historyRange.setBorder(true, true, true, true, true, true, '#e0e0e0', SpreadsheetApp.BorderStyle.SOLID);
 
   // ==========================================
   // GLOBAL FORMATTING ADJUSTMENTS
   // ==========================================
-  sheet.setFrozenRows(2);
+  sheet.setFrozenRows(HEADER_ROW);
   sheet.setRowHeight(1, 35);
   
   // Auto-fit specific columns
