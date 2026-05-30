@@ -13,6 +13,28 @@ async function scrapeTrader(browser, trader, targetHistoryTrades, isFirstBatch) 
         return null;
     }
 
+    // Block heavy resources to speed up every page load (no functional impact on scraping):
+    // - images/fonts/media: visual-only, save bandwidth and render time
+    // - known 3rd-party analytics/trackers: slow + irrelevant to data extraction
+    // We intentionally keep stylesheets (needed for offsetParent visibility checks),
+    // scripts (Angular bundles), XHR/fetch (the actual data APIs), and the document itself.
+    try {
+        await page.setRequestInterception(true);
+        page.on('request', (req) => {
+            const type = req.resourceType();
+            const url = req.url();
+            if (type === 'image' || type === 'font' || type === 'media') {
+                req.abort().catch(() => {});
+            } else if (/google-analytics|googletagmanager|doubleclick|facebook\.net|hotjar|segment\.io|mixpanel|amplitude|sentry\.io|fullstory|optimizely/.test(url)) {
+                req.abort().catch(() => {});
+            } else {
+                req.continue().catch(() => {});
+            }
+        });
+    } catch (e) {
+        // Interception unavailable — proceed without it (slower, but still functional).
+    }
+
     const payload = { type: "full_portfolio", traderUsername: trader, isFirstBatch, posts: [], overview: [], stats: [], trades: [], history: [] };
 
     try {
@@ -99,26 +121,54 @@ async function scrapeTrader(browser, trader, targetHistoryTrades, isFirstBatch) 
         await page.goto(`https://www.etoro.com/people/${trader}/portfolio/history`, { waitUntil: 'domcontentloaded' });
         await page.waitForSelector('#publicHistoryFlatView', { timeout: 30000 });
 
+        // Wait for the initial batch to actually render — either the first rows appear
+        // OR the Load More button becomes visible. Without this, the loop below would
+        // run before Angular finishes rendering and exit immediately with zero rows.
+        try {
+            await page.waitForFunction(
+                () => document.querySelectorAll('#publicHistoryFlatView .et-table-body-slot').length > 0 ||
+                      !!document.querySelector('et-people-portfolio-history-flat > button')?.offsetParent,
+                { timeout: 10000 }
+            );
+        } catch (e) {
+            // Neither rows nor button appeared — trader genuinely has no closed history
+        }
+
+        // Dynamic batch loop: instead of fixed 2s+3s waits per batch, poll until the row
+        // count actually grows after the click. Resolves the instant new rows render
+        // (typically <500ms) and breaks immediately when no new rows arrive (end of history).
         let clickCount = 0;
         while (true) {
             try {
-                // Stop if we already have enough trades loaded
-                const currentCount = await page.evaluate(() =>
+                const previousCount = await page.evaluate(() =>
                     document.querySelectorAll('#publicHistoryFlatView .et-table-body-slot').length
                 );
-                if (currentCount >= targetHistoryTrades) break;
+                if (previousCount >= targetHistoryTrades) break;
 
                 await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-                await delay(2000);
                 const hasClicked = await page.evaluate(() => {
                     const btn = document.querySelector('et-people-portfolio-history-flat > button');
                     if (btn && btn.offsetParent !== null) { btn.click(); return true; }
                     return false;
                 });
                 if (!hasClicked) break; // No button = end of history reached
-                await delay(3000);
+
+                // Wait until the row count actually grows past previousCount (max 8s safety net).
+                try {
+                    await page.waitForFunction(
+                        (prev) => document.querySelectorAll('#publicHistoryFlatView .et-table-body-slot').length > prev,
+                        { timeout: 8000 },
+                        previousCount
+                    );
+                } catch (e) {
+                    break; // No new rows arrived — treat as end of history
+                }
+
                 clickCount++;
-                process.stdout.write(`\r   Loading history: batch ${clickCount} done, ~${currentCount} trades visible...`);
+                const newCount = await page.evaluate(() =>
+                    document.querySelectorAll('#publicHistoryFlatView .et-table-body-slot').length
+                );
+                process.stdout.write(`\r   Loading history: batch ${clickCount} done, ~${newCount} trades visible...`);
             } catch (e) { break; }
         }
         console.log(`\n   Finished expanding list. Extracting table data...`);
