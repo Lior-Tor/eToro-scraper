@@ -1,5 +1,32 @@
+/**
+ * @file Per-trader scraper. Visits the trader's public eToro pages in five phases:
+ *   1. Overview            (current portfolio positions)
+ *   2. Past performance    (monthly/yearly stats)
+ *   3. Active trades       (per-asset detail, paced adaptively)
+ *   4. Closed history      (paginated "Load More" loop, polled on row growth)
+ *   5. Latest posts        (3 most recent posts — runs last on purpose)
+ * Returns a structured payload, or null if the trader is unreachable.
+ */
+
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
+// Phase 3 inter-asset pacing — REQUIRED in .env, validated at startup.
+// Adaptive: the target gap is measured from cycle start, so a slow page load consumes
+// the budget and we don't wait extra.
+const ASSET_GAP_MIN_MS = parseInt(process.env.ASSET_GAP_MIN_MS, 10);
+const ASSET_GAP_MAX_MS = parseInt(process.env.ASSET_GAP_MAX_MS, 10);
+
+/**
+ * Scrape a single trader's public profile into a structured payload.
+ * Each phase is wrapped so a recoverable failure (no overview rows, slow history)
+ * skips that trader cleanly without crashing the broader run.
+ * @param {import('puppeteer').Browser} browser - shared Puppeteer browser instance
+ * @param {string} trader - eToro username (without the leading @)
+ * @param {number} targetHistoryTrades - upper bound on history rows to load in Phase 4
+ * @param {boolean} isFirstBatch - true for the first trader of the session
+ * @returns {Promise<object|null>} payload `{ type, traderUsername, isFirstBatch,
+ *   posts, overview, stats, trades, history }`, or null if the trader was skipped
+ */
 async function scrapeTrader(browser, trader, targetHistoryTrades, isFirstBatch) {
     console.log(`\n========================================================`);
     console.log(`🚀 SCRAPING IN PROGRESS FOR TRADER: @${trader.toUpperCase()}`);
@@ -92,7 +119,9 @@ async function scrapeTrader(browser, trader, targetHistoryTrades, isFirstBatch) 
 
         // --- PHASE 3: ACTIVE TRADES ---
         console.log(`🔄 [PHASE 3] Extracting active trades...`);
+        const gapSpan = Math.max(1, ASSET_GAP_MAX_MS - ASSET_GAP_MIN_MS);
         for (const asset of payload.overview) {
+            const cycleStart = Date.now();
             try {
                 await page.goto(`https://www.etoro.com/people/${trader}/portfolio/${asset.ticker.toLowerCase()}`, { waitUntil: 'domcontentloaded' });
                 await page.waitForSelector('.et-table-body > div', { timeout: 30000 });
@@ -112,7 +141,13 @@ async function scrapeTrader(browser, trader, targetHistoryTrades, isFirstBatch) 
                 }, asset.ticker);
                 payload.trades.push(...tickerTrades);
             } catch (err) {}
-            await delay(3000 + Math.floor(Math.random() * 2000));
+
+            // Adaptive pacing: target a randomized inter-cycle gap of ASSET_GAP_MIN..MAX ms,
+            // measured from the start of the cycle. If the scrape itself already consumed the
+            // budget, only enforce a 500ms floor so very fast cycles still leave a beat.
+            const targetGap = ASSET_GAP_MIN_MS + Math.floor(Math.random() * gapSpan);
+            const elapsed = Date.now() - cycleStart;
+            await delay(Math.max(500, targetGap - elapsed));
         }
         console.log(`✅ Extracted ${payload.trades.length} active trades.`);
 

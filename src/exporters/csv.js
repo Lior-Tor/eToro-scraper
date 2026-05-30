@@ -1,7 +1,21 @@
+/**
+ * @file Local .csv exporter. One file per session containing all traders, separated by
+ * `=== START/END OF TRADER ===` markers. Each trader block holds LATEST POSTS, OVERVIEW,
+ * PAST PERFORMANCE, ACTIVE TRADES, and CLOSED HISTORY sections in that order. Post
+ * bodies can contain newlines; those stay inside RFC 4180 quoted fields, which Excel
+ * and Sheets handle natively on import.
+ */
+
 const fs = require('fs');
 
+/**
+ * Write all collected traders into a single .csv file on disk.
+ * @param {Array<object>} allData - array of scrapeTrader() payloads
+ * @param {string} fileName - filename without extension; `.csv` is appended automatically
+ */
 function generateCsv(allData, fileName) {
     let csvContent = "";
+    // Quote + escape a CSV field per RFC 4180 (wrap in ", double any internal ").
     const s = (val) => `"${String(val).replace(/"/g, '""')}"`;
 
     allData.forEach(data => {

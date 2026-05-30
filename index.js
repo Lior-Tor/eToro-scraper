@@ -1,10 +1,16 @@
+/**
+ * @file CLI entrypoint. Validates env → asks scraping/export mode → orchestrates
+ * the browser → delegates per-trader work to src/scraper → fans out to src/exporters.
+ */
+
 require('dotenv').config();
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 puppeteer.use(StealthPlugin());
 const readline = require('readline');
 
-// Disable TLS certificate validation (Fixes fetch errors behind certain firewalls/VPNs)
+// Workaround for firewalls/VPNs that perform TLS inspection — disables certificate
+// verification for ALL outbound requests in this process (including the Sheets webhook).
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
 const { scrapeTrader } = require('./src/scraper');
@@ -15,6 +21,15 @@ const { generateCsv } = require('./src/exporters/csv');
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 const askQuestion = (rl, question) => new Promise(resolve => rl.question(question, resolve));
 
+// Inter-trader pacing in multi-trader mode — REQUIRED in .env, validated at startup.
+const TRADER_GAP_MIN_MS = parseInt(process.env.TRADER_GAP_MIN_MS, 10);
+const TRADER_GAP_MAX_MS = parseInt(process.env.TRADER_GAP_MAX_MS, 10);
+
+/**
+ * Build the local output filename — `<trader-or-MultiSession>_<YYYY-MM-DD_HH-MM>`.
+ * @param {Array<{traderUsername: string}>} allData
+ * @returns {string} filename without extension
+ */
 function buildFileName(allData) {
     const now = new Date();
     const timestamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}-${String(now.getMinutes()).padStart(2, '0')}`;
@@ -26,12 +41,46 @@ function buildFileName(allData) {
 // MAIN EXECUTION
 // ==========================================
 
+/**
+ * Interactive CLI flow: validate env → pick trader mode → pick export mode →
+ * ping the webhook (if Sheets selected) → for each trader scrape + optionally
+ * stream to Sheets → finally write local Excel/CSV if requested.
+ * Fails fast on missing config; per-trader failures are non-fatal (next trader continues).
+ * @returns {Promise<void>}
+ */
 async function start() {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
     console.log("\n========================================================");
     console.log("   ETORO MULTI-TRADER SCRAPER & ANALYSIS PIPELINE");
     console.log("========================================================\n");
+
+    // --- VALIDATE RATE-LIMITING CONFIG (fail fast before any prompts or browser launch) ---
+    const pacingVars = ['ASSET_GAP_MIN_MS', 'ASSET_GAP_MAX_MS', 'TRADER_GAP_MIN_MS', 'TRADER_GAP_MAX_MS'];
+    const missing = pacingVars.filter(v => !process.env[v]);
+    if (missing.length) {
+        console.log(`❌ FATAL ERROR: Required rate-limiting variables missing from .env: ${missing.join(', ')}`);
+        console.log("   -> See .env.example for the recommended values and copy them in.");
+        rl.close();
+        return;
+    }
+    const parsed = Object.fromEntries(pacingVars.map(v => [v, parseInt(process.env[v], 10)]));
+    const invalid = pacingVars.filter(v => !Number.isInteger(parsed[v]) || parsed[v] <= 0);
+    if (invalid.length) {
+        console.log(`❌ FATAL ERROR: Rate-limiting variables must be positive integers: ${invalid.join(', ')}`);
+        rl.close();
+        return;
+    }
+    if (parsed.ASSET_GAP_MIN_MS > parsed.ASSET_GAP_MAX_MS) {
+        console.log(`❌ FATAL ERROR: ASSET_GAP_MIN_MS (${parsed.ASSET_GAP_MIN_MS}) must be <= ASSET_GAP_MAX_MS (${parsed.ASSET_GAP_MAX_MS}).`);
+        rl.close();
+        return;
+    }
+    if (parsed.TRADER_GAP_MIN_MS > parsed.TRADER_GAP_MAX_MS) {
+        console.log(`❌ FATAL ERROR: TRADER_GAP_MIN_MS (${parsed.TRADER_GAP_MIN_MS}) must be <= TRADER_GAP_MAX_MS (${parsed.TRADER_GAP_MAX_MS}).`);
+        rl.close();
+        return;
+    }
 
     // --- STEP 1: TRADER SELECTION ---
     console.log("STEP 1: Choose a scraping mode:");
@@ -117,10 +166,12 @@ async function start() {
     // --- INITIATE SCRAPING ---
     const targetHistoryTrades = parseInt(process.env.HISTORY_TRADES_TARGET, 10) || 500;
 
-    // Note: If you encounter IP blocks (scraping has errors), use the next browser variable. Remember to switch back for faster scraping once done.
+    // 1920×1080 viewport is critical: eToro's history table virtualizes columns past the
+    // viewport, so a smaller viewport silently drops the P/L column from the extracted DOM.
     const browser = await puppeteer.launch({ headless: true, defaultViewport: { width: 1920, height: 1080 } });
 
-    // In case of blocked IP or aggressive anti-scraping, use to open browser window and pass CAPTCHA or other verification.
+    // Escape hatch for IP blocks or captchas: comment the line above and uncomment below to
+    // run a visible browser where you can manually solve a challenge.
     // const browser = await puppeteer.launch({ headless: false, defaultViewport: null });
 
     const sessionData = [];
@@ -139,7 +190,7 @@ async function start() {
         }
 
         console.log("⏳ Waiting before next scrape to avoid rate limiting...");
-        await delay(5000 + Math.floor(Math.random() * 3000));
+        await delay(TRADER_GAP_MIN_MS + Math.floor(Math.random() * Math.max(1, TRADER_GAP_MAX_MS - TRADER_GAP_MIN_MS)));
     }
 
     await browser.close();

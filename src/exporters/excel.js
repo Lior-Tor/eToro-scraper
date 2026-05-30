@@ -1,5 +1,20 @@
+/**
+ * @file Local .xlsx exporter (ExcelJS). One workbook per session; one worksheet
+ * per trader, tab name = `@<username>`. Layout per tab:
+ *   - Rows 1-4: LATEST POSTS band (title row 1, posts #1/#2/#3 on rows 2-4)
+ *   - Row 5:    gap
+ *   - Row 6+:   OVERVIEW (cols A-C), PAST PERFORMANCE (E-R),
+ *              ACTIVE TRADES (T-W), CLOSED HISTORY (Y-AD)
+ */
+
 const ExcelJS = require('exceljs');
 
+/**
+ * Write all collected traders into a single .xlsx workbook on disk.
+ * @param {Array<object>} allData - array of scrapeTrader() payloads
+ * @param {string} fileName - filename without extension; `.xlsx` is appended automatically
+ * @returns {Promise<void>}
+ */
 async function generateExcel(allData, fileName) {
     const workbook = new ExcelJS.Workbook();
 
@@ -9,7 +24,8 @@ async function generateExcel(allData, fileName) {
     for (const data of allData) {
         const ws = workbook.addWorksheet(`@${data.traderUsername}`);
 
-        // Helper to add a styled table with a title, starting at a given row
+        // Render a styled table at (startRow, startCol): merged title across the header
+        // columns at startRow, column headers at startRow+1, data rows from startRow+2.
         const addStyledTable = (startCol, title, headers, rows, startRow) => {
             const titleCell = ws.getCell(startRow, startCol);
             titleCell.value = title;
