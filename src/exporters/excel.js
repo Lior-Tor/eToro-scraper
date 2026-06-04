@@ -94,7 +94,7 @@ async function generateExcel(allData, fileName) {
     }
 
     await workbook.xlsx.writeFile(`${fileName}.xlsx`);
-    console.log(`\n📊 Excel file successfully generated: ${fileName}.xlsx`);
+    console.log(`📊 Excel updated: ${fileName}.xlsx`);
 }
 
 module.exports = { generateExcel };

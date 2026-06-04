@@ -27,13 +27,15 @@ const TRADER_GAP_MAX_MS = parseInt(process.env.TRADER_GAP_MAX_MS, 10);
 
 /**
  * Build the local output filename — `<trader-or-MultiSession>_<YYYY-MM-DD_HH-MM>`.
- * @param {Array<{traderUsername: string}>} allData
+ * Called once at session start; the same filename is reused for every incremental
+ * write so the timestamp doesn't drift between traders.
+ * @param {string[]} tradersToScrape - the planned trader list (locks single-vs-multi naming)
  * @returns {string} filename without extension
  */
-function buildFileName(allData) {
+function buildFileName(tradersToScrape) {
     const now = new Date();
     const timestamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}-${String(now.getMinutes()).padStart(2, '0')}`;
-    const baseName = allData.length === 1 ? allData[0].traderUsername : "eToro_MultiSession";
+    const baseName = tradersToScrape.length === 1 ? tradersToScrape[0] : "eToro_MultiSession";
     return `${baseName}_${timestamp}`;
 }
 
@@ -166,6 +168,10 @@ async function start() {
     // --- INITIATE SCRAPING ---
     const targetHistoryTrades = parseInt(process.env.HISTORY_TRADES_TARGET, 10) || 500;
 
+    // Lock the local filename now so every per-trader incremental write hits the same
+    // file. Locking up-front also prevents the timestamp from drifting mid-session.
+    const fileName = (exportFlags.excel || exportFlags.csv) ? buildFileName(tradersToScrape) : null;
+
     // 1920×1080 viewport is critical: eToro's history table virtualizes columns past the
     // viewport, so a smaller viewport silently drops the P/L column from the extracted DOM.
     const browser = await puppeteer.launch({ headless: true, defaultViewport: { width: 1920, height: 1080 } });
@@ -183,10 +189,11 @@ async function start() {
         if (payload) {
             sessionData.push(payload);
 
-            // If Google Sheets is selected, stream data immediately to avoid holding everything in memory
-            if (exportFlags.sheets) {
-                await sendToSheets(payload, process.env.WEBHOOK_URL);
-            }
+            // Persist to every selected destination after each successful trader, so a
+            // later failure or Ctrl+C never discards data that's already been gathered.
+            if (exportFlags.sheets) await sendToSheets(payload, process.env.WEBHOOK_URL);
+            if (exportFlags.excel) await generateExcel(sessionData, fileName);
+            if (exportFlags.csv) generateCsv(sessionData, fileName);
         }
 
         console.log("⏳ Waiting before next scrape to avoid rate limiting...");
@@ -194,14 +201,6 @@ async function start() {
     }
 
     await browser.close();
-
-    // --- LOCAL FILE GENERATION ---
-    if (sessionData.length > 0 && (exportFlags.excel || exportFlags.csv)) {
-        console.log(`\n📦 Generating local export files...`);
-        const fileName = buildFileName(sessionData);
-        if (exportFlags.excel) await generateExcel(sessionData, fileName);
-        if (exportFlags.csv) generateCsv(sessionData, fileName);
-    }
 
     console.log("\n🎉 ALL SCRAPING TASKS COMPLETED SUCCESSFULLY!");
 }

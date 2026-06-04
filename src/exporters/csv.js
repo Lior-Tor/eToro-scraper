@@ -40,7 +40,7 @@ function generateCsv(allData, fileName) {
     });
 
     fs.writeFileSync(`${fileName}.csv`, csvContent, 'utf8');
-    console.log(`💾 CSV file successfully generated: ${fileName}.csv`);
+    console.log(`💾 CSV updated: ${fileName}.csv`);
 }
 
 module.exports = { generateCsv };
