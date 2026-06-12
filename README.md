@@ -17,7 +17,7 @@ Tracking copy-traders efficiently requires looking beyond just their current hol
 .
 ├── node_modules/           # Installed dependencies
 ├── src/
-│   ├── scraper.js          # Puppeteer logic — all 4 scraping phases
+│   ├── scraper.js          # Puppeteer logic — all 5 scraping phases
 │   └── exporters/
 │       ├── sheets.js       # Google Sheets webhook upload
 │       ├── excel.js        # Local Excel (.xlsx) generation
@@ -25,6 +25,7 @@ Tracking copy-traders efficiently requires looking beyond just their current hol
 ├── .env                    # Private credentials (Webhook URL, Trader Usernames)
 ├── .env.example            # Template for environment variables
 ├── .gitignore              # Tells Git to ignore .env, node_modules, and local data files
+├── .scraper-state.json     # Runtime resume checkpoint (auto-created/deleted, gitignored)
 ├── index.js                # CLI, browser setup, and orchestration
 ├── package-lock.json       # Exact versions of dependencies
 ├── package.json            # Project metadata and dependencies
@@ -250,14 +251,21 @@ function doPost(e) {
    ```bash
    cp .env.example .env
    ```
-4. Configure your `.env` file with your targets:
+4. Configure your `.env` file with your targets (see `.env.example` for full notes):
    ```env
-   # Leave WEBHOOK_URL empty if you only plan to export to local Excel/CSV
+   # Only needed for Google Sheets export; leave as-is for local-only exports
    WEBHOOK_URL=https://script.google.com/macros/s/your-webhook-url/exec
-   
+
    TRADER_USERNAME=example_username
    MULTIPLE_TRADER_USERNAMES=trader1,trader2,trader3
-   HISTORY_TRADES_TARGET=500
+   HISTORY_TRADES_TARGET=1000
+
+   # REQUIRED — the script refuses to start if these are missing or invalid.
+   # Randomized wait bounds (ms) that pace requests to avoid eToro rate limits.
+   ASSET_GAP_MIN_MS=2000
+   ASSET_GAP_MAX_MS=3500
+   TRADER_GAP_MIN_MS=5000
+   TRADER_GAP_MAX_MS=8000
    ```
 
 ### 3. Usage
@@ -266,6 +274,8 @@ Run the interactive CLI scraper:
 node index.js
 ```
 You will be prompted to select **Single** or **Multiple** trader mode, followed by your preferred export destination (Sheets, Excel, CSV).
+
+**Resuming an interrupted run:** progress is checkpointed after every trader. If a run is interrupted (a block, a crash, `Ctrl+C`), just run `node index.js` again — when the checkpoint overlaps your trader list, it offers to **skip the traders already done and scrape only the missing ones**, merging everything into the same output file. The checkpoint is cleared automatically once every planned trader succeeds.
 
 ---
 

@@ -8,6 +8,12 @@ const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 puppeteer.use(StealthPlugin());
 const readline = require('readline');
+const fs = require('fs');
+
+// Crash-recovery checkpoint. Holds the in-progress session (filename + completed
+// trader payloads) so an interrupted run can resume and skip what's already done.
+// Written after every successful trader; deleted once the whole run completes.
+const STATE_FILE = '.scraper-state.json';
 
 // Workaround for firewalls/VPNs that perform TLS inspection — disables certificate
 // verification for ALL outbound requests in this process (including the Sheets webhook).
@@ -37,6 +43,62 @@ function buildFileName(tradersToScrape) {
     const timestamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}-${String(now.getMinutes()).padStart(2, '0')}`;
     const baseName = tradersToScrape.length === 1 ? tradersToScrape[0] : "eToro_MultiSession";
     return `${baseName}_${timestamp}`;
+}
+
+/**
+ * Load the recovery checkpoint, or null if absent/unreadable/corrupt.
+ * @returns {{fileName: string, sessionData: Array<object>}|null}
+ */
+function loadState() {
+    try {
+        const raw = fs.readFileSync(STATE_FILE, 'utf8');
+        const state = JSON.parse(raw);
+        if (state && Array.isArray(state.sessionData) && state.fileName) return state;
+    } catch (e) { /* missing or corrupt — treat as no checkpoint */ }
+    return null;
+}
+
+/** Write the recovery checkpoint. Never throws — a failed checkpoint must not stop a run. */
+function saveState(fileName, sessionData) {
+    try {
+        fs.writeFileSync(STATE_FILE, JSON.stringify({ fileName, sessionData }), 'utf8');
+    } catch (e) {
+        console.log(`⚠️  Could not write recovery checkpoint: ${e.message}`);
+    }
+}
+
+/** Delete the recovery checkpoint (called once the full run succeeds). Never throws. */
+function clearState() {
+    try { fs.unlinkSync(STATE_FILE); } catch (e) { /* already gone — fine */ }
+}
+
+/**
+ * Write the selected local files (Excel/CSV), tolerating a locked target file.
+ * On Windows a file open in Excel throws EBUSY/EPERM; we log a clear hint and carry
+ * on so the run isn't lost — the next successful trader rewrites the full dataset.
+ * @param {Array<object>} sessionData - all traders gathered so far
+ * @param {string} fileName - filename without extension
+ * @param {{excel: boolean, csv: boolean}} exportFlags
+ * @returns {Promise<boolean>} true if every requested local file was written this call
+ *   (also true when no local export was requested); false if any write was skipped
+ */
+async function persistLocalFiles(sessionData, fileName, exportFlags) {
+    let allWritten = true;
+    const guard = async (label, ext, write) => {
+        try {
+            await write();
+        } catch (err) {
+            allWritten = false;
+            if (err.code === 'EBUSY' || err.code === 'EPERM') {
+                console.log(`⚠️  ${label} file is locked (is "${fileName}.${ext}" open?). Skipped this write — it will catch up on the next trader.`);
+            } else {
+                console.log(`⚠️  Failed to write ${label} file: ${err.message}`);
+            }
+        }
+    };
+    if (exportFlags.excel) await guard('Excel', 'xlsx', () => generateExcel(sessionData, fileName));
+    if (exportFlags.csv) await guard('CSV', 'csv', () => generateCsv(sessionData, fileName));
+    return allWritten;
 }
 
 // ==========================================
@@ -111,6 +173,36 @@ async function start() {
         }
     }
 
+    // --- RECOVERY: offer to resume an interrupted session ---
+    // If a checkpoint exists and overlaps the planned list, the user can skip the
+    // traders already gathered and scrape only the ones still missing.
+    let resumeSessionData = [];
+    let resumeFileName = null;
+    const prior = loadState();
+    if (prior) {
+        const doneSet = new Set(prior.sessionData.map(p => p.traderUsername.toLowerCase()));
+        const remaining = tradersToScrape.filter(t => !doneSet.has(t.toLowerCase()));
+        if (remaining.length < tradersToScrape.length) {
+            const doneCount = tradersToScrape.length - remaining.length;
+            console.log(`\n🔄 A previous session was found: ${doneCount}/${tradersToScrape.length} of your planned traders already scraped.`);
+            console.log(`   Already done: ${prior.sessionData.map(p => '@' + p.traderUsername).join(', ')}`);
+            if (remaining.length === 0) {
+                console.log("   All planned traders are already in the checkpoint — nothing left to scrape.");
+            } else {
+                console.log(`   Still missing: ${remaining.map(t => '@' + t).join(', ')}`);
+            }
+            const answer = (await askQuestion(rl, "\nResume and scrape only the missing ones? (y/n): ")).trim().toLowerCase();
+            if (answer === 'y' || answer === 'yes') {
+                resumeSessionData = prior.sessionData;
+                resumeFileName = prior.fileName;
+                tradersToScrape = remaining;
+                console.log(`✅ Resuming — will scrape ${remaining.length} trader(s) and merge with the previous ${doneCount}.`);
+            } else {
+                console.log("↩️  Starting fresh — the previous checkpoint will be overwritten.");
+            }
+        }
+    }
+
     // --- STEP 2: EXPORT SELECTION ---
     console.log("\nSTEP 2: Where do you want to send the data?");
     console.log("  [1] Google Sheets Only (Requires Webhook)");
@@ -168,9 +260,14 @@ async function start() {
     // --- INITIATE SCRAPING ---
     const targetHistoryTrades = parseInt(process.env.HISTORY_TRADES_TARGET, 10) || 500;
 
-    // Lock the local filename now so every per-trader incremental write hits the same
-    // file. Locking up-front also prevents the timestamp from drifting mid-session.
-    const fileName = (exportFlags.excel || exportFlags.csv) ? buildFileName(tradersToScrape) : null;
+    // Lock the filename now so every incremental write (and the checkpoint) shares it.
+    // On resume we keep the original session's name so the same output file is updated.
+    const fileName = resumeFileName || buildFileName(tradersToScrape);
+
+    // Seed with any traders recovered from the checkpoint; the loop appends the rest.
+    const sessionData = [...resumeSessionData];
+    const resuming = resumeSessionData.length > 0;
+    const expectedTotal = resumeSessionData.length + tradersToScrape.length;
 
     // 1920×1080 viewport is critical: eToro's history table virtualizes columns past the
     // viewport, so a smaller viewport silently drops the P/L column from the extracted DOM.
@@ -180,10 +277,10 @@ async function start() {
     // run a visible browser where you can manually solve a challenge.
     // const browser = await puppeteer.launch({ headless: false, defaultViewport: null });
 
-    const sessionData = [];
-
     for (let i = 0; i < tradersToScrape.length; i++) {
-        const isFirstBatch = (i === 0);
+        // isFirstBatch tells the Sheets webhook to clear stale @-tabs. Only the very first
+        // trader of a fresh run qualifies — on resume the original run already did this.
+        const isFirstBatch = (i === 0) && !resuming;
         const payload = await scrapeTrader(browser, tradersToScrape[i], targetHistoryTrades, isFirstBatch);
 
         if (payload) {
@@ -191,9 +288,11 @@ async function start() {
 
             // Persist to every selected destination after each successful trader, so a
             // later failure or Ctrl+C never discards data that's already been gathered.
+            // Local writes are guarded: a locked file (e.g. open in Excel on Windows)
+            // must not crash the run — the next trader's write recovers everything.
             if (exportFlags.sheets) await sendToSheets(payload, process.env.WEBHOOK_URL);
-            if (exportFlags.excel) await generateExcel(sessionData, fileName);
-            if (exportFlags.csv) generateCsv(sessionData, fileName);
+            await persistLocalFiles(sessionData, fileName, exportFlags);
+            saveState(fileName, sessionData);
         }
 
         console.log("⏳ Waiting before next scrape to avoid rate limiting...");
@@ -202,7 +301,26 @@ async function start() {
 
     await browser.close();
 
-    console.log("\n🎉 ALL SCRAPING TASKS COMPLETED SUCCESSFULLY!");
+    // Final flush — if the LAST trader's write was skipped because the file was locked,
+    // there's no following trader to recover it, so write one more time here. Track
+    // whether it actually landed so we don't discard the checkpoint over a lost file.
+    const filesWritten = sessionData.length > 0
+        ? await persistLocalFiles(sessionData, fileName, exportFlags)
+        : true;
+
+    // Clear the checkpoint only when the run is fully done AND the data is safely on disk:
+    // every planned trader succeeded, and the local files were actually written (a CSV/Excel
+    // locked for the whole run would otherwise leave neither output nor a checkpoint).
+    const allTradersDone = sessionData.length >= expectedTotal;
+    if (allTradersDone && filesWritten) {
+        clearState();
+        console.log("\n🎉 ALL SCRAPING TASKS COMPLETED SUCCESSFULLY!");
+    } else if (!allTradersDone) {
+        const missing = expectedTotal - sessionData.length;
+        console.log(`\n⚠️  Done, but ${missing} trader(s) failed or were blocked. Re-run and choose resume to retry only those.`);
+    } else {
+        console.log(`\n⚠️  All traders scraped, but the local file is still locked. Close "${fileName}.csv"/".xlsx" and re-run — choosing resume will write it from the checkpoint without re-scraping.`);
+    }
 }
 
 start();
