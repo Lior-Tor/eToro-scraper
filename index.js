@@ -15,9 +15,10 @@ const fs = require('fs');
 // Written after every successful trader; deleted once the whole run completes.
 const STATE_FILE = '.scraper-state.json';
 
-// Workaround for firewalls/VPNs that perform TLS inspection — disables certificate
-// verification for ALL outbound requests in this process (including the Sheets webhook).
-process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+// TLS bypass for firewalls/VPNs that perform TLS inspection. Controlled from .env:
+// set NODE_TLS_REJECT_UNAUTHORIZED=0 to disable certificate verification for this process.
+// dotenv (above) loads it into process.env before any HTTPS request, so no hardcoding is
+// needed — leaving it unset keeps normal, secure certificate verification.
 
 const { scrapeTrader } = require('./src/scraper');
 const { sendToSheets } = require('./src/exporters/sheets');
