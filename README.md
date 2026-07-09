@@ -258,14 +258,17 @@ function doPost(e) {
 
    TRADER_USERNAME=example_username
    MULTIPLE_TRADER_USERNAMES=trader1,trader2,trader3
-   HISTORY_TRADES_TARGET=1000
+   HISTORY_TRADES_TARGET=300
 
    # REQUIRED — the script refuses to start if these are missing or invalid.
    # Randomized wait bounds (ms) that pace requests to avoid eToro rate limits.
-   ASSET_GAP_MIN_MS=2000
-   ASSET_GAP_MAX_MS=3500
-   TRADER_GAP_MIN_MS=5000
-   TRADER_GAP_MAX_MS=8000
+   # These are the recommended block-resistant defaults; see .env.example for tuning.
+   ASSET_GAP_MIN_MS=6000
+   ASSET_GAP_MAX_MS=8000
+   TRADER_GAP_MIN_MS=16000
+   TRADER_GAP_MAX_MS=20000
+   HISTORY_BATCH_DELAY_MIN_MS=3000
+   HISTORY_BATCH_DELAY_MAX_MS=5000
    ```
 
 ### 3. Usage

@@ -121,7 +121,7 @@ async function start() {
     console.log("========================================================\n");
 
     // --- VALIDATE RATE-LIMITING CONFIG (fail fast before any prompts or browser launch) ---
-    const pacingVars = ['ASSET_GAP_MIN_MS', 'ASSET_GAP_MAX_MS', 'TRADER_GAP_MIN_MS', 'TRADER_GAP_MAX_MS'];
+    const pacingVars = ['ASSET_GAP_MIN_MS', 'ASSET_GAP_MAX_MS', 'TRADER_GAP_MIN_MS', 'TRADER_GAP_MAX_MS', 'HISTORY_BATCH_DELAY_MIN_MS', 'HISTORY_BATCH_DELAY_MAX_MS'];
     const missing = pacingVars.filter(v => !process.env[v]);
     if (missing.length) {
         console.log(`❌ FATAL ERROR: Required rate-limiting variables missing from .env: ${missing.join(', ')}`);
@@ -143,6 +143,11 @@ async function start() {
     }
     if (parsed.TRADER_GAP_MIN_MS > parsed.TRADER_GAP_MAX_MS) {
         console.log(`❌ FATAL ERROR: TRADER_GAP_MIN_MS (${parsed.TRADER_GAP_MIN_MS}) must be <= TRADER_GAP_MAX_MS (${parsed.TRADER_GAP_MAX_MS}).`);
+        rl.close();
+        return;
+    }
+    if (parsed.HISTORY_BATCH_DELAY_MIN_MS > parsed.HISTORY_BATCH_DELAY_MAX_MS) {
+        console.log(`❌ FATAL ERROR: HISTORY_BATCH_DELAY_MIN_MS (${parsed.HISTORY_BATCH_DELAY_MIN_MS}) must be <= HISTORY_BATCH_DELAY_MAX_MS (${parsed.HISTORY_BATCH_DELAY_MAX_MS}).`);
         rl.close();
         return;
     }

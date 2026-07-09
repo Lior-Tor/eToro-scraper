@@ -16,6 +16,12 @@ const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 const ASSET_GAP_MIN_MS = parseInt(process.env.ASSET_GAP_MIN_MS, 10);
 const ASSET_GAP_MAX_MS = parseInt(process.env.ASSET_GAP_MAX_MS, 10);
 
+// Phase 4 "Load More" throttle — REQUIRED in .env, validated at startup. A randomized
+// pause between clicks spreads the history burst (the most bot-like pattern in a run)
+// so eToro is less likely to rate-limit. Higher = safer but slower history pagination.
+const HISTORY_BATCH_DELAY_MIN_MS = parseInt(process.env.HISTORY_BATCH_DELAY_MIN_MS, 10);
+const HISTORY_BATCH_DELAY_MAX_MS = parseInt(process.env.HISTORY_BATCH_DELAY_MAX_MS, 10);
+
 /**
  * Scrape a single trader's public profile into a structured payload.
  * Each phase is wrapped so a recoverable failure (no overview rows, slow history)
@@ -169,9 +175,11 @@ async function scrapeTrader(browser, trader, targetHistoryTrades, isFirstBatch) 
             // Neither rows nor button appeared — trader genuinely has no closed history
         }
 
-        // Dynamic batch loop: instead of fixed 2s+3s waits per batch, poll until the row
-        // count actually grows after the click. Resolves the instant new rows render
-        // (typically <500ms) and breaks immediately when no new rows arrive (end of history).
+        // Dynamic batch loop: poll until the row count actually grows after the click,
+        // then throttle before the next click. The poll resolves the instant new rows
+        // render (<500ms); the throttle (HISTORY_BATCH_DELAY) spreads the burst so eToro
+        // is less likely to rate-limit. The loop breaks when no new rows arrive (end of history).
+        const historyDelaySpan = Math.max(1, HISTORY_BATCH_DELAY_MAX_MS - HISTORY_BATCH_DELAY_MIN_MS);
         let clickCount = 0;
         while (true) {
             try {
@@ -204,6 +212,9 @@ async function scrapeTrader(browser, trader, targetHistoryTrades, isFirstBatch) 
                     document.querySelectorAll('#publicHistoryFlatView .et-table-body-slot').length
                 );
                 process.stdout.write(`\r   Loading history: batch ${clickCount} done, ~${newCount} trades visible...`);
+
+                // Throttle before the next click to avoid a rapid-fire burst.
+                await delay(HISTORY_BATCH_DELAY_MIN_MS + Math.floor(Math.random() * historyDelaySpan));
             } catch (e) { break; }
         }
         console.log(`\n   Finished expanding list. Extracting table data...`);
