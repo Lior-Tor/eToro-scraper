@@ -10,9 +10,9 @@ puppeteer.use(StealthPlugin());
 const readline = require('readline');
 const fs = require('fs');
 
-// Crash-recovery checkpoint. Holds the in-progress session (filename + completed
-// trader payloads) so an interrupted run can resume and skip what's already done.
-// Written after every successful trader; deleted once the whole run completes.
+// Crash-recovery checkpoint. Holds the in-progress session (filename + each trader's
+// payload, tagged with a `complete` flag) so an interrupted run can resume and skip only
+// the traders already fully done. Written after every trader; deleted once the run completes.
 const STATE_FILE = '.scraper-state.json';
 
 // TLS bypass for firewalls/VPNs that perform TLS inspection. Controlled from .env:
@@ -47,7 +47,9 @@ function buildFileName(tradersToScrape) {
 }
 
 /**
- * Load the recovery checkpoint, or null if absent/unreadable/corrupt.
+ * Load the recovery checkpoint, or null if absent/unreadable/corrupt. Each payload in
+ * sessionData carries a `complete` flag; a trader is only skipped on resume when its
+ * latest payload is complete, so partially-scraped/blocked traders get re-done.
  * @returns {{fileName: string, sessionData: Array<object>}|null}
  */
 function loadState() {
@@ -57,6 +59,24 @@ function loadState() {
         if (state && Array.isArray(state.sessionData) && state.fileName) return state;
     } catch (e) { /* missing or corrupt — treat as no checkpoint */ }
     return null;
+}
+
+/** Case-insensitive check: is this trader's latest payload complete (safe to skip on resume)? */
+function isComplete(payload) {
+    return !!payload && payload.complete !== false;
+}
+
+/**
+ * Insert or replace a trader's payload in sessionData (dedup by username, latest wins).
+ * Ensures a re-scraped trader overwrites its earlier partial entry so the CSV/Excel/Sheets
+ * outputs — all built from sessionData — reflect the full data, never a stale partial.
+ * @param {Array<object>} sessionData
+ * @param {object} payload
+ */
+function upsertTrader(sessionData, payload) {
+    const idx = sessionData.findIndex(p => p.traderUsername.toLowerCase() === payload.traderUsername.toLowerCase());
+    if (idx >= 0) sessionData[idx] = payload;
+    else sessionData.push(payload);
 }
 
 /** Write the recovery checkpoint. Never throws — a failed checkpoint must not stop a run. */
@@ -71,6 +91,26 @@ function saveState(fileName, sessionData) {
 /** Delete the recovery checkpoint (called once the full run succeeds). Never throws. */
 function clearState() {
     try { fs.unlinkSync(STATE_FILE); } catch (e) { /* already gone — fine */ }
+}
+
+/**
+ * When a block is detected, the last fully-scraped trader before it is a prime suspect for a
+ * silent throttle: an empty history OR empty posts right before a block is very likely the
+ * leading edge of the same throttle, not genuine emptiness. Mark such a trader incomplete so
+ * resume re-scrapes it. Only the checkpoint carries `complete`, so nothing else needs rewriting.
+ * @param {object|null} previousPayload - the last successfully-scraped trader's payload
+ * @param {string} fileName
+ * @param {Array<object>} sessionData
+ */
+function uncompletePreviousIfDegraded(previousPayload, fileName, sessionData) {
+    if (!previousPayload) return;
+    const noHistory = Array.isArray(previousPayload.history) && previousPayload.history.length === 0;
+    const noPosts = Array.isArray(previousPayload.posts) && previousPayload.posts.length === 0;
+    if (!noHistory && !noPosts) return;
+    previousPayload.complete = false;
+    const reason = noHistory && noPosts ? '0 history and 0 posts' : noHistory ? '0 history' : '0 posts';
+    console.log(`   ↩️  @${previousPayload.traderUsername} had ${reason} right before the block — marking it incomplete so resume re-scrapes it.`);
+    saveState(fileName, sessionData);
 }
 
 /**
@@ -107,10 +147,11 @@ async function persistLocalFiles(sessionData, fileName, exportFlags) {
 // ==========================================
 
 /**
- * Interactive CLI flow: validate env → pick trader mode → pick export mode →
- * ping the webhook (if Sheets selected) → for each trader scrape + optionally
- * stream to Sheets → finally write local Excel/CSV if requested.
- * Fails fast on missing config; per-trader failures are non-fatal (next trader continues).
+ * Interactive CLI flow: validate env → pick trader mode → offer resume → pick export
+ * mode → ping the webhook (if Sheets selected) → for each trader scrape + optionally
+ * stream to Sheets → write local Excel/CSV. Fails fast on missing config. A per-trader
+ * failure is non-fatal (skip and continue), but a detected eToro block stops the run so
+ * the IP isn't degraded further; the checkpoint is kept for resume either way.
  * @returns {Promise<void>}
  */
 async function start() {
@@ -179,27 +220,32 @@ async function start() {
         }
     }
 
+    // The full planned list (before any resume filtering) — used for completion accounting.
+    const plannedTraders = [...tradersToScrape];
+
     // --- RECOVERY: offer to resume an interrupted session ---
-    // If a checkpoint exists and overlaps the planned list, the user can skip the
-    // traders already gathered and scrape only the ones still missing.
+    // If a checkpoint exists and overlaps the planned list, the user can skip the traders
+    // already COMPLETED and scrape only the ones still missing. A trader whose checkpoint
+    // payload is incomplete (interrupted/blocked/partial) is treated as missing so it's redone.
     let resumeSessionData = [];
     let resumeFileName = null;
     const prior = loadState();
     if (prior) {
-        const doneSet = new Set(prior.sessionData.map(p => p.traderUsername.toLowerCase()));
+        const doneSet = new Set(prior.sessionData.filter(isComplete).map(p => p.traderUsername.toLowerCase()));
         const remaining = tradersToScrape.filter(t => !doneSet.has(t.toLowerCase()));
         if (remaining.length < tradersToScrape.length) {
             const doneCount = tradersToScrape.length - remaining.length;
-            console.log(`\n🔄 A previous session was found: ${doneCount}/${tradersToScrape.length} of your planned traders already scraped.`);
-            console.log(`   Already done: ${prior.sessionData.map(p => '@' + p.traderUsername).join(', ')}`);
+            const doneNames = tradersToScrape.filter(t => doneSet.has(t.toLowerCase()));
+            console.log(`\n🔄 A previous session was found: ${doneCount}/${tradersToScrape.length} of your planned traders fully scraped.`);
+            console.log(`   Already done: ${doneNames.map(t => '@' + t).join(', ')}`);
             if (remaining.length === 0) {
-                console.log("   All planned traders are already in the checkpoint — nothing left to scrape.");
+                console.log("   All planned traders are already complete in the checkpoint — nothing left to scrape.");
             } else {
-                console.log(`   Still missing: ${remaining.map(t => '@' + t).join(', ')}`);
+                console.log(`   Still missing/partial: ${remaining.map(t => '@' + t).join(', ')}`);
             }
             const answer = (await askQuestion(rl, "\nResume and scrape only the missing ones? (y/n): ")).trim().toLowerCase();
             if (answer === 'y' || answer === 'yes') {
-                resumeSessionData = prior.sessionData;
+                resumeSessionData = prior.sessionData; // keep ALL payloads (incl. partials) so their data stays in the outputs
                 resumeFileName = prior.fileName;
                 tradersToScrape = remaining;
                 console.log(`✅ Resuming — will scrape ${remaining.length} trader(s) and merge with the previous ${doneCount}.`);
@@ -270,10 +316,9 @@ async function start() {
     // On resume we keep the original session's name so the same output file is updated.
     const fileName = resumeFileName || buildFileName(tradersToScrape);
 
-    // Seed with any traders recovered from the checkpoint; the loop appends the rest.
+    // Seed with any traders recovered from the checkpoint; the loop upserts the rest.
     const sessionData = [...resumeSessionData];
     const resuming = resumeSessionData.length > 0;
-    const expectedTotal = resumeSessionData.length + tradersToScrape.length;
 
     // 1920×1080 viewport is critical: eToro's history table virtualizes columns past the
     // viewport, so a smaller viewport silently drops the P/L column from the extracted DOM.
@@ -283,22 +328,50 @@ async function start() {
     // run a visible browser where you can manually solve a challenge.
     // const browser = await puppeteer.launch({ headless: false, defaultViewport: null });
 
+    // A hard challenge page and a soft throttle look different to the code: the former is caught
+    // by scrapeTrader (blocked sentinel); the latter surfaces as an ordinary Phase-1 failure
+    // (null), indistinguishable from a private/missing profile. But several failures in a row
+    // almost certainly mean the IP is throttled — so we stop after MAX_CONSECUTIVE_FAILURES.
+    const MAX_CONSECUTIVE_FAILURES = 2;
+    let previousPayload = null;     // last successfully-scraped trader (for the un-complete heuristic)
+    let consecutiveFailures = 0;
     for (let i = 0; i < tradersToScrape.length; i++) {
         // isFirstBatch tells the Sheets webhook to clear stale @-tabs. Only the very first
         // trader of a fresh run qualifies — on resume the original run already did this.
         const isFirstBatch = (i === 0) && !resuming;
-        const payload = await scrapeTrader(browser, tradersToScrape[i], targetHistoryTrades, isFirstBatch);
+        const result = await scrapeTrader(browser, tradersToScrape[i], targetHistoryTrades, isFirstBatch);
 
-        if (payload) {
-            sessionData.push(payload);
+        // Hard block: an explicit challenge page was detected. Stop to protect the IP; the
+        // blocked trader wasn't saved, so it (and everything after) is retried on resume.
+        if (result && result.blocked) {
+            uncompletePreviousIfDegraded(previousPayload, fileName, sessionData);
+            console.log("\n🛑 BLOCKED by eToro — stopping the run to protect your IP.");
+            console.log("   Progress is checkpointed. Let the IP rest, then re-run and choose resume to continue.");
+            break;
+        }
 
-            // Persist to every selected destination after each successful trader, so a
-            // later failure or Ctrl+C never discards data that's already been gathered.
-            // Local writes are guarded: a locked file (e.g. open in Excel on Windows)
-            // must not crash the run — the next trader's write recovers everything.
-            if (exportFlags.sheets) await sendToSheets(payload, process.env.WEBHOOK_URL);
+        if (result) {
+            consecutiveFailures = 0;
+            // Upsert so a re-scraped trader replaces its earlier partial entry (never duplicates).
+            upsertTrader(sessionData, result);
+
+            // Persist to every selected destination after each trader, so a later failure or
+            // Ctrl+C never discards data already gathered. Local writes are guarded: a locked
+            // file (e.g. open in Excel on Windows) must not crash the run.
+            if (exportFlags.sheets) await sendToSheets(result, process.env.WEBHOOK_URL);
             await persistLocalFiles(sessionData, fileName, exportFlags);
             saveState(fileName, sessionData);
+            previousPayload = result; // only real payloads count as the "previous" trader
+        } else {
+            // Soft throttle (or a genuinely private/missing profile). One is ambiguous; several
+            // in a row is almost certainly a throttle — stop before it degrades the IP further.
+            consecutiveFailures++;
+            if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+                uncompletePreviousIfDegraded(previousPayload, fileName, sessionData);
+                console.log(`\n🛑 ${consecutiveFailures} traders failed in a row — eToro is likely throttling your IP. Stopping to protect it.`);
+                console.log("   Progress is checkpointed. Let the IP rest, then re-run and choose resume to continue.");
+                break;
+            }
         }
 
         console.log("⏳ Waiting before next scrape to avoid rate limiting...");
@@ -315,15 +388,17 @@ async function start() {
         : true;
 
     // Clear the checkpoint only when the run is fully done AND the data is safely on disk:
-    // every planned trader succeeded, and the local files were actually written (a CSV/Excel
-    // locked for the whole run would otherwise leave neither output nor a checkpoint).
-    const allTradersDone = sessionData.length >= expectedTotal;
-    if (allTradersDone && filesWritten) {
+    // every planned trader COMPLETED (not merely attempted), and the local files were actually
+    // written (a CSV/Excel locked for the whole run would otherwise leave neither output nor a
+    // checkpoint). Incomplete/blocked traders keep the checkpoint so resume can retry them.
+    const completedSet = new Set(sessionData.filter(isComplete).map(p => p.traderUsername.toLowerCase()));
+    const missingTraders = plannedTraders.filter(t => !completedSet.has(t.toLowerCase()));
+    if (missingTraders.length === 0 && filesWritten) {
         clearState();
         console.log("\n🎉 ALL SCRAPING TASKS COMPLETED SUCCESSFULLY!");
-    } else if (!allTradersDone) {
-        const missing = expectedTotal - sessionData.length;
-        console.log(`\n⚠️  Done, but ${missing} trader(s) failed or were blocked. Re-run and choose resume to retry only those.`);
+    } else if (missingTraders.length > 0) {
+        console.log(`\n⚠️  Done, but ${missingTraders.length} trader(s) failed, were blocked, or came back partial: ${missingTraders.map(t => '@' + t).join(', ')}`);
+        console.log("   Re-run and choose resume to retry only those.");
     } else {
         console.log(`\n⚠️  All traders scraped, but the local file is still locked. Close "${fileName}.csv"/".xlsx" and re-run — choosing resume will write it from the checkpoint without re-scraping.`);
     }

@@ -5,7 +5,8 @@
  *   3. Active trades       (per-asset detail, paced adaptively)
  *   4. Closed history      (paginated "Load More" loop, polled on row growth)
  *   5. Latest posts        (3 most recent posts — runs last on purpose)
- * Returns a structured payload, or null if the trader is unreachable.
+ * Each core phase checks for eToro's bot-challenge page and aborts with a blocked
+ * signal so the caller can stop the run; see scrapeTrader's @returns for the shapes.
  */
 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
@@ -22,6 +23,34 @@ const ASSET_GAP_MAX_MS = parseInt(process.env.ASSET_GAP_MAX_MS, 10);
 const HISTORY_BATCH_DELAY_MIN_MS = parseInt(process.env.HISTORY_BATCH_DELAY_MIN_MS, 10);
 const HISTORY_BATCH_DELAY_MAX_MS = parseInt(process.env.HISTORY_BATCH_DELAY_MAX_MS, 10);
 
+// Thrown when eToro serves a bot-challenge page instead of real content. Distinct from a
+// normal failure so the orchestrator can STOP the run (protect the IP) rather than skip.
+class BlockError extends Error {}
+
+/**
+ * Detect eToro's bot-challenge / rate-limit interstitial by its distinctive body text
+ * ("Verification Required", "Access is temporarily restricted", "unusual activity ...").
+ * @param {import('puppeteer').Page} page
+ * @returns {Promise<boolean>}
+ */
+async function isBlockPage(page) {
+    try {
+        return await page.evaluate(() => {
+            const text = document.body ? document.body.innerText : "";
+            return /verification required|access is temporarily restricted|unusual activity from your (device|network)/i.test(text);
+        });
+    } catch (e) {
+        return false; // page torn down / not evaluable — let the normal flow decide
+    }
+}
+
+/** Throw BlockError if the current page is eToro's block interstitial. Call right after each goto. */
+async function assertNotBlocked(page, trader) {
+    if (await isBlockPage(page)) {
+        throw new BlockError(`eToro block page detected while scraping @${trader}`);
+    }
+}
+
 /**
  * Scrape a single trader's public profile into a structured payload.
  * Each phase is wrapped so a recoverable failure (no overview rows, slow history)
@@ -30,8 +59,12 @@ const HISTORY_BATCH_DELAY_MAX_MS = parseInt(process.env.HISTORY_BATCH_DELAY_MAX_
  * @param {string} trader - eToro username (without the leading @)
  * @param {number} targetHistoryTrades - upper bound on history rows to load in Phase 4
  * @param {boolean} isFirstBatch - true for the first trader of the session
- * @returns {Promise<object|null>} payload `{ type, traderUsername, isFirstBatch,
- *   posts, overview, stats, trades, history }`, or null if the trader was skipped
+ * @returns {Promise<object|null>} one of three shapes:
+ *   - the payload `{ type, traderUsername, isFirstBatch, complete, posts, overview,
+ *     stats, trades, history }` on success;
+ *   - `null` if the trader was skipped (not found / private / non-block failure);
+ *   - `{ blocked: true, traderUsername }` if eToro served a challenge page — this
+ *     signals the caller to STOP the run rather than continue to the next trader.
  */
 async function scrapeTrader(browser, trader, targetHistoryTrades, isFirstBatch) {
     console.log(`\n========================================================`);
@@ -68,12 +101,16 @@ async function scrapeTrader(browser, trader, targetHistoryTrades, isFirstBatch) 
         // Interception unavailable — proceed without it (slower, but still functional).
     }
 
-    const payload = { type: "full_portfolio", traderUsername: trader, isFirstBatch, posts: [], overview: [], stats: [], trades: [], history: [] };
+    // `complete` marks whether every phase finished cleanly (no block / no partial). The
+    // orchestrator only treats complete traders as "done" on resume; Part B flips it to false
+    // when a block or degraded phase is detected. Exporters ignore this field.
+    const payload = { type: "full_portfolio", traderUsername: trader, isFirstBatch, complete: true, posts: [], overview: [], stats: [], trades: [], history: [] };
 
     try {
         // --- PHASE 1: OVERVIEW ---
         console.log(`🌐 [PHASE 1] Navigating to ${trader}'s portfolio...`);
         await page.goto(`https://www.etoro.com/people/${trader}/portfolio`, { waitUntil: 'domcontentloaded' });
+        await assertNotBlocked(page, trader); // fail fast on a challenge page (no 30s selector wait)
 
         try {
             await page.waitForSelector('.et-table-body > div', { timeout: 30000 });
@@ -97,6 +134,7 @@ async function scrapeTrader(browser, trader, targetHistoryTrades, isFirstBatch) 
         // --- PHASE 2: PAST PERFORMANCE STATS ---
         console.log(`📊 [PHASE 2] Extracting Past Performance...`);
         await page.goto(`https://www.etoro.com/people/${trader}/stats`, { waitUntil: 'domcontentloaded' });
+        await assertNotBlocked(page, trader);
         await page.waitForSelector('et-user-performance-chart-new', { timeout: 30000 });
 
         try {
@@ -130,6 +168,7 @@ async function scrapeTrader(browser, trader, targetHistoryTrades, isFirstBatch) 
             const cycleStart = Date.now();
             try {
                 await page.goto(`https://www.etoro.com/people/${trader}/portfolio/${asset.ticker.toLowerCase()}`, { waitUntil: 'domcontentloaded' });
+                await assertNotBlocked(page, trader);
                 await page.waitForSelector('.et-table-body > div', { timeout: 30000 });
                 const tickerTrades = await page.evaluate((currentTicker) => {
                     const rows = Array.from(document.querySelectorAll('.et-table-body > div'));
@@ -146,7 +185,9 @@ async function scrapeTrader(browser, trader, targetHistoryTrades, isFirstBatch) 
                     return results;
                 }, asset.ticker);
                 payload.trades.push(...tickerTrades);
-            } catch (err) {}
+            } catch (err) {
+                if (err instanceof BlockError) throw err; // a block must halt the run, not be swallowed as a per-asset miss
+            }
 
             // Adaptive pacing: target a randomized inter-cycle gap of ASSET_GAP_MIN..MAX ms,
             // measured from the start of the cycle. If the scrape itself already consumed the
@@ -160,6 +201,7 @@ async function scrapeTrader(browser, trader, targetHistoryTrades, isFirstBatch) 
         // --- PHASE 4: CLOSED HISTORY ---
         console.log(`🕰️  [PHASE 4] Extracting closed history (~${targetHistoryTrades} trades targeted)...`);
         await page.goto(`https://www.etoro.com/people/${trader}/portfolio/history`, { waitUntil: 'domcontentloaded' });
+        await assertNotBlocked(page, trader);
         await page.waitForSelector('#publicHistoryFlatView', { timeout: 30000 });
 
         // Wait for the initial batch to actually render — either the first rows appear
@@ -291,6 +333,10 @@ async function scrapeTrader(browser, trader, targetHistoryTrades, isFirstBatch) 
         return payload;
 
     } catch (error) {
+        if (error instanceof BlockError) {
+            console.error(`🛑 eToro is serving a block/verification page (detected on @${trader}).`);
+            return { blocked: true, traderUsername: trader };
+        }
         console.error(`❌ Fatal Error for trader ${trader}:`, error);
         return null;
     } finally {

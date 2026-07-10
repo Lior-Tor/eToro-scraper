@@ -278,7 +278,9 @@ node index.js
 ```
 You will be prompted to select **Single** or **Multiple** trader mode, followed by your preferred export destination (Sheets, Excel, CSV).
 
-**Resuming an interrupted run:** progress is checkpointed after every trader. If a run is interrupted (a block, a crash, `Ctrl+C`), just run `node index.js` again — when the checkpoint overlaps your trader list, it offers to **skip the traders already done and scrape only the missing ones**, merging everything into the same output file. The checkpoint is cleared automatically once every planned trader succeeds.
+**Resuming an interrupted run:** progress is checkpointed after every trader. If a run is interrupted (a block, a crash, `Ctrl+C`), just run `node index.js` again — when the checkpoint overlaps your trader list, it offers to **skip the traders already done and scrape only the missing ones**, merging everything into the same output file. Only *fully complete* traders are skipped; any trader that was interrupted, blocked, or came back with degraded data is re-scraped. The checkpoint is cleared automatically once every planned trader succeeds.
+
+**Automatic block protection:** the scraper detects two block styles and **stops immediately** (keeping the checkpoint) to avoid degrading your IP further — a hard challenge page ("Verification Required" / "Access restricted"), and a soft throttle that surfaces as several traders failing in a row. When it stops, the last fully-scraped trader is re-checked: if it came back with no history or no posts right before the block, it's marked incomplete so resume re-scrapes it. Let the IP rest, then re-run and resume. If blocks are frequent, raise the `*_GAP_*` / `HISTORY_BATCH_DELAY_*` values and lower `HISTORY_TRADES_TARGET` (see `.env.example`), or switch networks (e.g. a phone hotspot) — a degraded IP is the usual root cause.
 
 ---
 
